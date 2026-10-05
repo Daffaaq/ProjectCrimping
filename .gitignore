@@ -1,0 +1,118 @@
+# ==================================
+# Visual Studio
+# ==================================
+
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Visual Studio cache
+.vscode/
+.idea/
+
+# ==================================
+# Build Output
+# ==================================
+
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# Publish
+publish/
+*.pubxml
+*.publishproj
+
+# Logs
+[Ll]og/
+[Ll]ogs/
+*.log
+
+
+# ==================================
+# NuGet Packages
+# ==================================
+
+packages/
+*.nupkg
+
+# NuGet v3 cache
+.nuget/
+
+
+# ==================================
+# Temporary Files
+# ==================================
+
+*.tmp
+*.temp
+*.cache
+*.bak
+*.old
+
+
+# ==================================
+# User Local Configuration
+# ==================================
+
+# Jangan commit konfigurasi lokal
+GlobalClass.cs
+DatabaseHelper.cs
+
+# Jika ada file konfigurasi lokal lain
+*.local.cs
+
+
+# ==================================
+# Database Local Files
+# ==================================
+
+*.mdf
+*.ldf
+*.ndf
+
+
+# ==================================
+# Windows
+# ==================================
+
+Thumbs.db
+Desktop.ini
+
+
+# ==================================
+# Test
+# ==================================
+
+TestResults/
+*.trx
+
+
+# ==================================
+# Crash / Debug
+# ==================================
+
+*.dmp
+*.dump
+
+
+# ==================================
+# Installer / Deployment
+# ==================================
+
+*.msi
+*.exe
+*.zip
+
+
+# ==================================
+# Backup
+# ==================================
+
+*.backup
+*.orig
