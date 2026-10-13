@@ -346,6 +346,7 @@ namespace ProjectCrimping
             return field;
         }
 
+       
         private static void AddRow(TableLayoutPanel body, string label, Control content)
         {
             var wrap = new TransparentPanel
