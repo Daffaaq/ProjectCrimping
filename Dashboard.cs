@@ -17,26 +17,28 @@ namespace ProjectCrimping
     /// ================================================================
     ///  RINGKASAN ALUR KERJA (urutan operator)
     /// ================================================================
-    ///  1. Scan LOTNO (bar di atas)        → cari tiproductname di inventory.
-    ///                                       Simpan tiproductname ke _state.
-    ///                                       (Patokan BELUM diambil di sini.)
-    ///  2. Scan APLIKATOR                  → divalidasi ke tabel MSAplikator,
-    ///                                       lalu tabel riwayat hari ini dimuat.
-    ///  3. Scan WOS (format XXXX.001)      → validasi format; lalu cari patokan
-    ///                                       di TrRPHMesin dengan DUA syarat:
-    ///                                         - TERMINALA/TERMINALB = tiproductname
-    ///                                         - barcode = WOS
-    ///                                       Kalau ketemu di sisi A dan B,
-    ///                                       operator memilih lewat FormPilihSisi.
-    ///                                       Tombol N1 aktif setelah WOS valid.
-    ///  4. Tekan N1 → N2 → N3 (1 tombol)   → tiap tombol membuka form input ukuran.
-    ///                                       Setelah N3 + konfirmasi NG, data di-INSERT
-    ///                                       ke TrCrimpingResult dan tombol kembali ke N1.
-    ///  5. Fokus kembali ke WOS            → operator bisa scan WOS berikutnya TANPA
-    ///                                       scan ulang Lotno/Aplikator, karena
-    ///                                       ResetAfterSubmit() mempertahankan
-    ///                                       tiproductname dan hanya menghapus
-    ///                                       patokan + hasil N1/N2/N3.
+    ///  1. Scan LOT MATERIAL (field di Card 1) → cari tipartnumber
+    ///                                            di inventory.
+    ///                                            Simpan tipartnumber ke _state.
+    ///                                            (Patokan BELUM diambil di sini.)
+    ///  2. Scan APLIKATOR (field di Card 1)    → divalidasi ke tabel MSAplikator,
+    ///                                            lalu tabel riwayat hari ini dimuat.
+    ///  3. Scan WOS (field di Card 2, format XXXX.001)
+    ///                                         → validasi format; lalu cari patokan
+    ///                                            di TrRPHMesin dengan DUA syarat:
+    ///                                              - TERMINALA/TERMINALB = tipartnumber
+    ///                                              - barcode = WOS
+    ///                                            Kalau ketemu di sisi A dan B,
+    ///                                            operator memilih lewat FormPilihSisi.
+    ///                                            Tombol N1 aktif setelah WOS valid.
+    ///  4. Tekan N1 → N2 → N3 (1 tombol)       → tiap tombol membuka form input ukuran.
+    ///                                            Setelah N3 + konfirmasi NG, data di-INSERT
+    ///                                            ke TrCrimpingResult dan tombol kembali ke N1.
+    ///  5. Fokus kembali ke WOS                → operator bisa scan WOS berikutnya TANPA
+    ///                                            scan ulang LOT MATERIAL/Aplikator, karena
+    ///                                            ResetAfterSubmit() mempertahankan
+    ///                                            tipartnumber dan hanya menghapus
+    ///                                            patokan + hasil N1/N2/N3.
     ///
     /// ================================================================
     ///  STRUKTUR LAYOUT (BuildContent)
@@ -45,9 +47,11 @@ namespace ProjectCrimping
     ///   ├─ Sidebar (kiri, 270 px, Dock.Left)  : profil, menu, logout
     ///   └─ Konten (Dock.Fill, TableLayoutPanel 1 kolom x 5 baris)
     ///        ├─ Baris 0 (AutoSize)   : Header judul
-    ///        ├─ Baris 1 (60 px)      : Bar LOTNO + tombol X (reset semua)
-    ///        ├─ Baris 2 (180 px)     : Kotak input TERMINAL / APLIKATOR / WOS
-    ///        ├─ Baris 3 (64 px)      : Tombol dinamis N1/N2/N3
+    ///        ├─ Baris 1 (156 px)     : Card 1 — LOT MATERIAL + APLIKATOR
+    ///        │                          (field tetap, tidak ganti-ganti)
+    ///        ├─ Baris 2 (120 px)     : Card 2 — WOS
+    ///        │                          (ganti-ganti tiap selesai submit)
+    ///        ├─ Baris 3 (52 px)      : Tombol dinamis N1/N2/N3
     ///        └─ Baris 4 (sisa ruang) : Tabel riwayat (DataGridView)
     ///
     ///  Seluruh UI dibangun lewat kode (BuildUI), BUKAN lewat Designer,
@@ -58,12 +62,14 @@ namespace ProjectCrimping
     /// ================================================================
     ///  - "Patokan" = nilai standar CH/IH/CW/IW/Tension dari TrRPHMesin,
     ///    diambil SETELAH WOS di-scan (karena butuh kolom barcode).
+    ///  - Field LOT MATERIAL memakai control `txtTerminal` (nama historis),
+    ///    isinya adalah tipartnumber hasil lookup dari Lot Material.
     ///  - Ada DUA jenis reset, jangan ketukar:
-    ///        * ResetNState()       → hapus SEMUA, termasuk Tiproductname.
-    ///                                 Dipakai saat Lotno/Terminal di-reset,
-    ///                                 operator WAJIB scan Lotno ulang.
+    ///        * ResetNState()       → hapus SEMUA, termasuk Tipartnumber.
+    ///                                 Dipakai saat LOT MATERIAL direset,
+    ///                                 operator WAJIB scan LOT MATERIAL ulang.
     ///        * ResetAfterSubmit()  → hapus hasil N + patokan + sisi,
-    ///                                 TAPI pertahankan Tiproductname.
+    ///                                 TAPI pertahankan Tipartnumber.
     ///                                 Dipakai setelah simpan N3 sukses,
     ///                                 erase Aplikator, dan erase WOS.
     ///  - "Hari produksi" berjalan jam 06:00 s/d 06:00 hari berikutnya
@@ -75,6 +81,9 @@ namespace ProjectCrimping
     ///  - Tabel yang dipakai masih TrCrimpingResult (tabel salinan).
     ///  - Warna & font bersumber dari AppThemeLogin supaya konsisten
     ///    dengan halaman Login.
+    ///  - TableLayoutPanel di dalam card WAJIB punya RowStyle eksplisit
+    ///    (Percent 100). Tanpa itu baris jadi AutoSize dan isi card
+    ///    terpotong (border field & label WOS kepotong).
     /// </summary>
     public partial class Dashboard : Form
     {
@@ -93,6 +102,9 @@ namespace ProjectCrimping
         private static readonly Color ErrorColor = AppThemeLogin.ColorError;
         private static readonly Color SuccessColor = Color.FromArgb(46, 204, 113);
         private static readonly Color PageBg = Color.White;
+
+        /// <summary>Font besar untuk field scan (LOT MATERIAL, APLIKATOR, WOS) supaya mudah dibaca operator.</summary>
+        private static readonly Font BigInputFont = new Font("Segoe UI Semibold", 18f);
 
         private static readonly Color FieldLockedBg = Color.FromArgb(238, 240, 243);
 
@@ -115,21 +127,22 @@ namespace ProjectCrimping
         private const string IcExport = "\uE8A5";
         private const string IcPower = "\uE7E8";
         private const string IcErase = "\uE75C";
-        private const string IcClose = "\uE711";
         private const string IcTerminal = "\uE7F4";
         private const string IcTag = "\uE8EC";
-        private const string IcSearch = "\uE721";
 
         // ================================================================
         //  KONTROL UI
         // ================================================================
-        private TextBox txtLotno, txtTerminal, txtAplikator, txtWos;
+        //  txtTerminal sekarang dipakai sebagai field "LOT MATERIAL"
+        //  (nama historis dipertahankan biar BE yang menyusul tidak bingung).
+        private TextBox txtTerminal, txtAplikator, txtWos;
+
         private RoundedButton btnN;
         private int _nStep = 1;
         private DataGridView dgv;
 
-        private RoundedPanel fieldLotno, fieldTerminal, fieldAplikator, fieldWos;
-        private RoundedButton eraseLotno, eraseTerminal, eraseAplikator, eraseWos;
+        private RoundedPanel fieldTerminal, fieldAplikator, fieldWos;
+        private RoundedButton eraseTerminal, eraseAplikator, eraseWos;
 
         /// <summary>Foto profil operator dari URL. Menutupi AvatarCircle kalau berhasil load.</summary>
         private AvatarPicture _avatarPic;
@@ -150,10 +163,6 @@ namespace ProjectCrimping
             MinimumSize = new Size(1100, 700);
             DoubleBuffered = true;
             BuildUI();
-
-            // Load foto profil secara async SETELAH form ditampilkan.
-            // Kalau gagal, AvatarCircle (inisial) tetap tampil.
-            //Shown += async (s, e) => await LoadAvatarAsync();
         }
 
         protected override async void OnShown(EventArgs e)
@@ -184,7 +193,13 @@ namespace ProjectCrimping
             SuspendLayout();
             Controls.Add(BuildContent());
             Controls.Add(BuildSidebar());
-            ActiveControl = txtLotno;
+
+            // POKA-YOKE: urutan wajib LOT MATERIAL → APLIKATOR → WOS.
+            // Di awal hanya LOT MATERIAL yang terbuka.
+            LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
+            LockField(fieldWos, txtWos, eraseWos, true);
+
+            ActiveControl = txtTerminal;
             ResumeLayout(true);
         }
 
@@ -210,7 +225,7 @@ namespace ProjectCrimping
             public decimal? N3_IW { get; set; }
             public int? N3_NG { get; set; }
 
-            public string Tiproductname { get; set; }
+            public string Tipartnumber { get; set; }
             public string SisiTerminal { get; set; }
             public decimal? PatokanCH { get; set; }
             public decimal? PatokanIH { get; set; }
@@ -223,14 +238,14 @@ namespace ProjectCrimping
             public void ClearN3() { N3_CH = null; N3_IH = null; N3_CW = null; N3_IW = null; N3_NG = null; }
             public void ClearPatokan()
             {
-                Tiproductname = null;
+                Tipartnumber = null;
                 SisiTerminal = null;
                 PatokanCH = null; PatokanIH = null; PatokanCW = null; PatokanIW = null; PatokanTension = null;
             }
 
             /// <summary>
             /// Hapus patokan + sisi terminal saja.
-            /// Tiproductname SENGAJA tidak dihapus — dipakai ResetAfterSubmit()
+            /// Tipartnumber SENGAJA tidak dihapus — dipakai ResetAfterSubmit()
             /// supaya operator bisa langsung scan WOS berikutnya.
             /// </summary>
             public void ClearPatokanOnly()
@@ -266,8 +281,6 @@ namespace ProjectCrimping
             };
 
             // ---- PictureBox di atas AvatarCircle: foto dari URL ----
-            //  Awalnya Visible=false. LoadAvatarAsync() akan menampilkan
-            //  kalau download gambar berhasil.
             _avatarPic = new AvatarPicture
             {
                 Size = new Size(92, 92),
@@ -309,8 +322,6 @@ namespace ProjectCrimping
                 BackColor = Color.Transparent
             });
 
-            // Urutan Add: avatar dulu, baru _avatarPic di atasnya.
-            // _avatarPic.Visible = false sampai foto berhasil didownload.
             profile.Controls.Add(avatar);
             profile.Controls.Add(_avatarPic);
             profile.Controls.Add(lblName);
@@ -404,10 +415,6 @@ namespace ProjectCrimping
         // =====================================================
         //  HELPER: inisial dari nama
         // =====================================================
-        /// <summary>
-        /// Ambil inisial dari nama, max 2 karakter.
-        /// Contoh: "Dedi Ahmad" → "DA", "Budi" → "BU", null → "?".
-        /// </summary>
         private static string GetInitials(string nama)
         {
             if (string.IsNullOrWhiteSpace(nama)) return "?";
@@ -430,18 +437,9 @@ namespace ProjectCrimping
 
         // =====================================================
         //  LOAD FOTO PROFIL DARI URL
-        //
-        //  URL: http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
-        //  Kalau gagal (noreg/ext kosong, file tidak ada, server down),
-        //  _avatarPic dibiarkan Visible=false → AvatarCircle inisial tampil.
-        //
-        //  Dipanggil sekali di event Shown (lihat constructor).
         // =====================================================
         private async Task LoadAvatarAsync()
         {
-            // ============================================================
-            //  LOGGING HELPER (lokal) — biar konsisten formatnya
-            // ============================================================
             void Log(string msg)
             {
                 string line = $"[AVATAR {DateTime.Now:HH:mm:ss.fff}] {msg}";
@@ -464,7 +462,6 @@ namespace ProjectCrimping
             Log($"Session.Noreg = '{noreg ?? "(null)"}'");
             Log($"Session.ext   = '{ext ?? "(null)"}'");
 
-            // ext di-normalisasi: buang titik di depan kalau ada.
             if (!string.IsNullOrWhiteSpace(ext))
                 ext = ext.TrimStart('.').Trim();
 
@@ -507,8 +504,6 @@ namespace ProjectCrimping
                         return;
                     }
 
-                    // Kalau download selesai, tapi status-nya faulted/exception,
-                    // kita tangkap di sini sebelum await.
                     if (downloadTask.IsFaulted)
                     {
                         Log($"DOWNLOAD FAULTED. Exception:");
@@ -533,10 +528,6 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // Cek magic byte: apakah benar-benar JPEG/PNG?
-                // JPEG: FF D8 FF ...
-                // PNG : 89 50 4E 47 ...
-                // HTML (kemungkinan error page): 3C 21 ... atau 3C 68 ...
                 string magic = BitConverter.ToString(data, 0, Math.Min(8, data.Length));
                 Log($"Magic bytes (8 pertama) = {magic}");
 
@@ -549,8 +540,6 @@ namespace ProjectCrimping
                 if (!isJpeg && !isPng)
                 {
                     Log("WARNING: byte bukan JPEG/PNG. Kemungkinan server balikin HTML error.");
-
-                    // Coba intip 200 karakter pertama (kalau HTML, bakal keliatan)
                     int previewLen = Math.Min(200, data.Length);
                     string preview = System.Text.Encoding.UTF8.GetString(data, 0, previewLen);
                     Log($"Preview 200 char pertama:\n{preview}");
@@ -641,15 +630,15 @@ namespace ProjectCrimping
                 RowCount = 5
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // Header
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));  // LOT MATERIAL + APLIKATOR
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));  // WOS
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));   // Tombol N
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // Tabel
 
             main.Controls.Add(BuildHeader(), 0, 0);
-            main.Controls.Add(BuildLotnoBar(), 0, 1);
-            main.Controls.Add(BuildInputCard(), 0, 2);
+            main.Controls.Add(BuildLotMaterialCard(), 0, 1);
+            main.Controls.Add(BuildWosCard(), 0, 2);
             main.Controls.Add(BuildNButtons(), 0, 3);
             main.Controls.Add(BuildTableCard(), 0, 4);
             return main;
@@ -695,189 +684,239 @@ namespace ProjectCrimping
         }
 
         // =====================================================
-        //  BAR LOTNO
+        //  CARD 1: LOT MATERIAL + APLIKATOR
+        //
+        //  Layout per-kolom:
+        //    [Label LOT MATERIAL]        [Label APLIKATOR]
+        //    [Field LOT MATERIAL] [🗑]    [Field APLIKATOR] [🗑]
+        //
+        //  Field di card ini TETAP (tidak ganti-ganti) selama operator
+        //  belum menekan tombol erase. Setelah N3 submit sukses,
+        //  field ini tetap terisi & locked — operator bisa langsung
+        //  scan WOS berikutnya di Card 2.
         // =====================================================
-        private Control BuildLotnoBar()
+        private Control BuildLotMaterialCard()
         {
-            var bar = new TableLayoutPanel
+            var card = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
-                BackColor = PageBg,
-                ColumnCount = 4,
-                RowCount = 1,
-                Margin = new Padding(0, 0, 0, 12)
+                Margin = new Padding(0, 0, 0, 12),
+                Padding = new Padding(20, 14, 20, 14),
+                Radius = 16,
+                FillColor = Color.White,
+                BorderColor = FieldBorder
             };
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            bar.Controls.Add(new Label
+            // 2 kolom sejajar: LOT MATERIAL | APLIKATOR
+            var grid = new TableLayoutPanel
             {
-                Text = "LOTNO",
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 2,
+                RowCount = 1
+            };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // FIX: tinggi baris pasti, tidak AutoSize
+
+            // ---------- Kolom kiri: LOT MATERIAL ----------
+            var colLot = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 2,
+                RowCount = 2,
+                Margin = new Padding(0, 0, 10, 0)
+            };
+            colLot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            colLot.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            colLot.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            colLot.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            colLot.Controls.Add(new Label
+            {
+                Text = "LOT MATERIAL",
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
                 ForeColor = TextSub,
                 Font = new Font("Segoe UI Semibold", 9.5f),
-                BackColor = Color.Transparent
+                BackColor = Color.Transparent,
+                Margin = Padding.Empty
             }, 0, 0);
 
-            fieldLotno = new RoundedPanel
+            var fldLot = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
-                Margin = new Padding(0, 4, 0, 4),
+                Margin = new Padding(0, 0, 8, 0),
                 Padding = new Padding(1),
                 Radius = 10,
                 FillColor = FieldBg,
                 BorderColor = FieldBorder,
                 FocusColor = Accent
             };
-
-            var inner = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 9, 12, 0) };
-            txtLotno = new TextBox
+            var innerLot = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 12, 0) };
+            txtTerminal = new TextBox
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.None,
                 BackColor = FieldBg,
                 ForeColor = TextDark,
-                Font = AppThemeLogin.FontInput
+                Font = BigInputFont
             };
-            inner.Controls.Add(txtLotno);
+            innerLot.Controls.Add(txtTerminal);
+            CenterInput(innerLot, txtTerminal);
+            var iconLot = new Label { Dock = DockStyle.Left, Width = 44, AutoSize = false };
+            AppThemeLogin.ApplyIcon(iconLot, IcTerminal, "🖥", 12F, FieldIcon);
+            fldLot.Controls.Add(innerLot);
+            fldLot.Controls.Add(iconLot);
+            fieldTerminal = fldLot;
+            colLot.Controls.Add(fldLot, 0, 1);
 
-            var icon = new Label { Dock = DockStyle.Left, Width = 44, AutoSize = false };
-            AppThemeLogin.ApplyIcon(icon, IcSearch, "🔍", 12F, FieldIcon);
-
-            fieldLotno.Controls.Add(inner);
-            fieldLotno.Controls.Add(icon);
-
-            txtLotno.Enter += (s, e) =>
-            {
-                fieldLotno.Focused = true;
-                if (!txtLotno.ReadOnly) fieldLotno.BorderColor = Accent;
-                fieldLotno.Invalidate();
-            };
-            txtLotno.Leave += (s, e) =>
-            {
-                fieldLotno.Focused = false;
-                if (!txtLotno.ReadOnly) fieldLotno.BorderColor = FieldBorder;
-                fieldLotno.Invalidate();
-            };
-
-            bar.Controls.Add(fieldLotno, 1, 0);
-
-            eraseLotno = new RoundedButton
+            eraseTerminal = new RoundedButton
             {
                 Dock = DockStyle.Fill,
-                Margin = new Padding(10, 4, 0, 4),
-                IconGlyph = IcClose,
+                Margin = Padding.Empty,
+                IconGlyph = IcErase,
                 Radius = 10,
                 FillColor = AccentSoft,
                 BorderColor = AccentLine,
                 IconColor = Accent
             };
-            bar.Controls.Add(eraseLotno, 2, 0);
+            colLot.Controls.Add(eraseTerminal, 1, 1);
+            grid.Controls.Add(colLot, 0, 0);
 
-            // ===== ENTER di Lotno =====
-            txtLotno.KeyDown += (s, e) =>
+            // ---------- Kolom kanan: APLIKATOR ----------
+            var colApl = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 2,
+                RowCount = 2,
+                Margin = new Padding(10, 0, 0, 0)
+            };
+            colApl.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            colApl.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            colApl.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
+            colApl.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            colApl.Controls.Add(new Label
+            {
+                Text = "APLIKATOR",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = TextSub,
+                Font = new Font("Segoe UI Semibold", 9.5f),
+                BackColor = Color.Transparent,
+                Margin = Padding.Empty
+            }, 0, 0);
+
+            var fldApl = new RoundedPanel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 8, 0),
+                Padding = new Padding(1),
+                Radius = 10,
+                FillColor = FieldBg,
+                BorderColor = FieldBorder,
+                FocusColor = Accent
+            };
+            var innerApl = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 12, 0) };
+            txtAplikator = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
+                BackColor = FieldBg,
+                ForeColor = TextDark,
+                Font = BigInputFont
+            };
+            innerApl.Controls.Add(txtAplikator);
+            CenterInput(innerApl, txtAplikator);
+            var iconApl = new Label { Dock = DockStyle.Left, Width = 44, AutoSize = false };
+            AppThemeLogin.ApplyIcon(iconApl, AppThemeLogin.IconGear, AppThemeLogin.FallbackGear, 12F, FieldIcon);
+            fldApl.Controls.Add(innerApl);
+            fldApl.Controls.Add(iconApl);
+            fieldAplikator = fldApl;
+            colApl.Controls.Add(fldApl, 0, 1);
+
+            eraseAplikator = new RoundedButton
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                IconGlyph = IcErase,
+                Radius = 10,
+                FillColor = AccentSoft,
+                BorderColor = AccentLine,
+                IconColor = Accent
+            };
+            colApl.Controls.Add(eraseAplikator, 1, 1);
+            grid.Controls.Add(colApl, 1, 0);
+
+            // ----- Focus border event -----
+            txtTerminal.Enter += (s, e) => { fldLot.Focused = true; if (!txtTerminal.ReadOnly) fldLot.BorderColor = Accent; fldLot.Invalidate(); };
+            txtTerminal.Leave += (s, e) => { fldLot.Focused = false; if (!txtTerminal.ReadOnly) fldLot.BorderColor = FieldBorder; fldLot.Invalidate(); };
+            txtAplikator.Enter += (s, e) => { fldApl.Focused = true; if (!txtAplikator.ReadOnly) fldApl.BorderColor = Accent; fldApl.Invalidate(); };
+            txtAplikator.Leave += (s, e) => { fldApl.Focused = false; if (!txtAplikator.ReadOnly) fldApl.BorderColor = FieldBorder; fldApl.Invalidate(); };
+
+            // POKA-YOKE: kalau operator klik/tab ke APLIKATOR yang masih terkunci,
+            // fokus dipindah paksa ke field yang memang gilirannya.
+            txtAplikator.Enter += (s, e) =>
+            {
+                if (txtAplikator.ReadOnly) BeginInvoke(new Action(FocusCurrentStep));
+            };
+
+            // ===== ENTER di LOT MATERIAL =====
+            txtTerminal.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
                 e.SuppressKeyPress = true;
+                if (!ValidateNotEmpty(txtTerminal, fieldTerminal)) return;
 
-                string lotno = txtLotno.Text.Trim();
-                if (string.IsNullOrEmpty(lotno))
+                string lotMaterial = txtTerminal.Text.Trim();
+
+                string tipartnumber = GetTipartnumberByLotno(lotMaterial);
+                if (string.IsNullOrEmpty(tipartnumber))
                 {
-                    NotifPopup.Warning(this, "Lotno Kosong", "Silakan scan Lotno dulu.");
+                    fieldTerminal.BorderColor = ErrorColor;
+                    fieldTerminal.Invalidate();
+
+                    NotifPopup.Warning(this, "LOT MATERIAL Tidak Ditemukan",
+                        $"LOT MATERIAL '{lotMaterial}' tidak ditemukan.\n\nPeriksa kembali barcode yang discan.");
+
+                    txtTerminal.Focus();
+                    txtTerminal.SelectAll();
                     return;
                 }
 
-                string tiproductname = GetTiproductnameByLotno(lotno);
-                if (string.IsNullOrEmpty(tiproductname))
-                {
-                    NotifPopup.Warning(this, "Lotno Tidak Ditemukan",
-                        $"Lotno '{lotno}' tidak terdaftar di inventory.");
-                    txtLotno.Focus();
-                    return;
-                }
+                _state.Tipartnumber = tipartnumber;
 
-                _state.Tiproductname = tiproductname;
-                txtTerminal.Text = tiproductname;
+                // Field LOT MATERIAL langsung berubah jadi tipartnumber hasil lookup.
+                // Nilai ini yang kemudian dipakai sebagai "terminal" di
+                // LoadDataCrimping, IsWosDuplicate, InsertLhhpWH, dan ExportPdf.
+                txtTerminal.Text = tipartnumber;
 
-                LockField(fieldLotno, txtLotno, eraseLotno, true);
+                FlashSuccess(fieldTerminal);
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
-
-                FlashSuccess(fieldLotno);
 
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, false);
                 txtAplikator.Focus();
             };
 
-            // ===== X: reset SEMUA =====
-            eraseLotno.Click += (s, e) =>
-            {
-                txtLotno.Clear();
-                txtTerminal.Clear();
-                txtAplikator.Clear();
-                txtWos.Clear();
-
-                LockField(fieldLotno, txtLotno, eraseLotno, false);
-                LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
-                LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
-                LockField(fieldWos, txtWos, eraseWos, true);
-
-                ResetBorder(fieldLotno, fieldTerminal, fieldAplikator, fieldWos);
-                ResetNState();
-                ClearTable();
-
-                txtLotno.Focus();
-            };
-
-            return bar;
-        }
-
-        // =====================================================
-        //  KOTAK INPUT: TERMINAL, APLIKATOR, WOS
-        // =====================================================
-        private Control BuildInputCard()
-        {
-            var card = new RoundedPanel
-            {
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 0, 12),
-                Padding = new Padding(20, 10, 20, 10),
-                Radius = 16,
-                FillColor = Color.White,
-                BorderColor = FieldBorder
-            };
-
-            var grid = new TableLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = Color.Transparent,
-                ColumnCount = 3,
-                RowCount = 3
-            };
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
-            for (int i = 0; i < 3; i++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
-
-            AddField(grid, 0, "TERMINAL", IcTerminal, "🖥",
-                     out txtTerminal, out fieldTerminal, out eraseTerminal);
-            AddField(grid, 1, "APLIKATOR", AppThemeLogin.IconGear, AppThemeLogin.FallbackGear,
-                     out txtAplikator, out fieldAplikator, out eraseAplikator);
-            AddField(grid, 2, "WOS", IcTag, "🏷",
-                     out txtWos, out fieldWos, out eraseWos);
-
-            LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
-            LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
-            LockField(fieldWos, txtWos, eraseWos, true);
-
-            // ===== ENTER di Aplikator =====
+            // ===== ENTER di APLIKATOR =====
             txtAplikator.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
                 e.SuppressKeyPress = true;
+
+                // POKA-YOKE: field terkunci → abaikan; LOT MATERIAL belum valid → tolak.
+                if (txtAplikator.ReadOnly) return;
+                if (string.IsNullOrEmpty(_state.Tipartnumber))
+                {
+                    NotifPopup.Warning(this, "Urutan Salah",
+                        "Scan LOT MATERIAL dulu sebelum APLIKATOR.");
+                    FocusCurrentStep();
+                    return;
+                }
+
                 if (!ValidateNotEmpty(txtAplikator, fieldAplikator)) return;
 
                 string kodeAplikator = txtAplikator.Text.Trim();
@@ -888,7 +927,7 @@ namespace ProjectCrimping
                     fieldAplikator.Invalidate();
 
                     NotifPopup.Warning(this, "Aplikator Tidak Ditemukan",
-                        $"Kode Aplikator '{kodeAplikator}' tidak terdaftar di MSAplikator.");
+                        $"Aplikator '{kodeAplikator}' tidak ditemukan.\n\nPeriksa kembali barcode aplikator yang discan.");
 
                     txtAplikator.Focus();
                     txtAplikator.SelectAll();
@@ -896,8 +935,8 @@ namespace ProjectCrimping
                 }
 
                 FlashSuccess(fieldAplikator);
-
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
+
                 LockField(fieldWos, txtWos, eraseWos, false);
                 txtWos.Focus();
 
@@ -907,52 +946,195 @@ namespace ProjectCrimping
                     Session.Noreg);
             };
 
+            // ===== ERASE LOT MATERIAL → reset total =====
+            eraseTerminal.Click += (s, e) =>
+            {
+                txtTerminal.Clear();
+                txtAplikator.Clear();
+                txtWos.Clear();
+
+                LockField(fieldTerminal, txtTerminal, eraseTerminal, false);
+                LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
+                LockField(fieldWos, txtWos, eraseWos, true);
+
+                ResetBorder(fieldTerminal, fieldAplikator, fieldWos);
+                ResetNState();
+                ClearTable();
+
+                txtTerminal.Focus();
+            };
+
+            // ===== ERASE APLIKATOR =====
+            eraseAplikator.Click += (s, e) =>
+            {
+                // POKA-YOKE: tombol erase tidak boleh membuka APLIKATOR sebelum LOT MATERIAL valid.
+                if (string.IsNullOrEmpty(_state.Tipartnumber))
+                {
+                    FocusCurrentStep();
+                    return;
+                }
+
+                txtAplikator.Clear();
+                txtWos.Clear();
+
+                LockField(fieldAplikator, txtAplikator, eraseAplikator, false);
+                LockField(fieldWos, txtWos, eraseWos, true);
+                ResetBorder(fieldAplikator, fieldWos);
+
+                ResetAfterSubmit();
+                ClearTable();
+
+                txtAplikator.Focus();
+            };
+
+            card.Controls.Add(grid);
+            return card;
+        }
+
+        // =====================================================
+        //  CARD 2: WOS
+        //
+        //  Layout horizontal:
+        //    [WOS]  [Field WOS .............] [🗑]
+        //
+        //  Field di card ini GANTI-GANTI tiap selesai submit N3.
+        //  Setelah submit sukses, WOS dikosongkan & di-unlock,
+        //  sementara LOT MATERIAL + APLIKATOR tetap locked di Card 1.
+        // =====================================================
+        private Control BuildWosCard()
+        {
+            var card = new RoundedPanel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 0, 12),
+                Padding = new Padding(20, 14, 20, 14),
+                Radius = 16,
+                FillColor = Color.White,
+                BorderColor = FieldBorder
+            };
+
+            var row = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 3,
+                RowCount = 1
+            };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));    // label WOS (was 130)
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));          // FIX: tinggi baris pasti, tidak AutoSize
+
+            row.Controls.Add(new Label
+            {
+                Text = "WOS",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = TextSub,
+                Font = new Font("Segoe UI Semibold", 9.5f),
+                BackColor = Color.Transparent,
+                Margin = Padding.Empty
+            }, 0, 0);
+
+            var fld = new RoundedPanel
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 8, 0),
+                Padding = new Padding(1),
+                Radius = 10,
+                FillColor = FieldBg,
+                BorderColor = FieldBorder,
+                FocusColor = Accent
+            };
+            var inner = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 0, 12, 0) };
+            txtWos = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
+                BackColor = FieldBg,
+                ForeColor = TextDark,
+                Font = BigInputFont
+            };
+            inner.Controls.Add(txtWos);
+            CenterInput(inner, txtWos);
+            var icon = new Label { Dock = DockStyle.Left, Width = 44, AutoSize = false };
+            AppThemeLogin.ApplyIcon(icon, IcTag, "🏷", 12F, FieldIcon);
+            fld.Controls.Add(inner);
+            fld.Controls.Add(icon);
+            fieldWos = fld;
+            row.Controls.Add(fld, 1, 0);
+
+            eraseWos = new RoundedButton
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                IconGlyph = IcErase,
+                Radius = 10,
+                FillColor = AccentSoft,
+                BorderColor = AccentLine,
+                IconColor = Accent
+            };
+            row.Controls.Add(eraseWos, 2, 0);
+
+            // Focus event
+            txtWos.Enter += (s, e) => { fld.Focused = true; if (!txtWos.ReadOnly) fld.BorderColor = Accent; fld.Invalidate(); };
+            txtWos.Leave += (s, e) => { fld.Focused = false; if (!txtWos.ReadOnly) fld.BorderColor = FieldBorder; fld.Invalidate(); };
+
+            // POKA-YOKE: kalau operator klik/tab ke WOS yang masih terkunci,
+            // fokus dipindah paksa ke field yang memang gilirannya.
+            txtWos.Enter += (s, e) =>
+            {
+                if (txtWos.ReadOnly) BeginInvoke(new Action(FocusCurrentStep));
+            };
+
             // ===== ENTER di WOS =====
             txtWos.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
                 e.SuppressKeyPress = true;
+
+                // POKA-YOKE: field terkunci → abaikan; APLIKATOR belum valid → tolak.
+                if (txtWos.ReadOnly) return;
+                if (!txtAplikator.ReadOnly)
+                {
+                    NotifPopup.Warning(this, "Urutan Salah",
+                        "Scan APLIKATOR dulu sebelum WOS.");
+                    FocusCurrentStep();
+                    return;
+                }
+
                 if (!ValidateNotEmpty(txtWos, fieldWos)) return;
 
                 string wosInput = txtWos.Text.Trim();
 
-                // Validasi format WOS: harus ada titik + skema angka setelahnya
                 bool formatValid = wosInput.Contains(".") && TryParseSkema(wosInput, out _);
-
                 if (!formatValid)
                 {
                     fieldWos.BorderColor = ErrorColor;
                     fieldWos.Invalidate();
-
                     NotifPopup.Warning(this, "Format WOS Tidak Sesuai",
-                        "Format WOS tidak sesuai.\n\n" +
-                        "Contoh: BEJ81212112.001");
-
+                        "Format WOS tidak sesuai.\n\nContoh: BEJ81212112.001");
                     txtWos.Focus();
                     txtWos.SelectAll();
                     return;
                 }
 
-                if (string.IsNullOrEmpty(_state.Tiproductname))
+                if (string.IsNullOrEmpty(_state.Tipartnumber))
                 {
-                    NotifPopup.Warning(this, "Lotno Belum Discan",
-                        "Scan Lotno dulu sebelum WOS.");
+                    NotifPopup.Warning(this, "LOT MATERIAL Belum Discan",
+                        "Scan LOT MATERIAL dulu sebelum WOS.");
                     txtWos.Focus();
                     return;
                 }
 
-                var results = CheckTerminal(_state.Tiproductname, wosInput);
-
+                var results = CheckTerminal(_state.Tipartnumber, wosInput);
                 if (results.Count == 0)
                 {
                     fieldWos.BorderColor = ErrorColor;
                     fieldWos.Invalidate();
-
                     NotifPopup.Warning(this, "WOS Tidak Cocok",
-                        $"WOS '{wosInput}' tidak ditemukan di TrRPHMesin (kolom barcode)\n" +
-                        $"untuk terminal '{_state.Tiproductname}'.\n\n" +
-                        "Tidak bisa lanjut.");
-
+                        $"WOS '{wosInput}' tidak sesuai dengan material '{_state.Tipartnumber}'.\n\n" +
+                        "Pastikan WOS dan LOT MATERIAL yang discan sudah benar.");
                     txtWos.Focus();
                     txtWos.SelectAll();
                     return;
@@ -984,20 +1166,12 @@ namespace ProjectCrimping
                 _state.PatokanIW = selected.IW;
                 _state.PatokanTension = selected.Tension;
 
-                if (IsWosDuplicate(
-                        wosInput,
-                        txtTerminal.Text.Trim(),
-                        txtAplikator.Text.Trim(),
-                        Session.Noreg))
+                if (IsWosDuplicate(wosInput, txtTerminal.Text.Trim(), txtAplikator.Text.Trim(), Session.Noreg))
                 {
                     fieldWos.BorderColor = ErrorColor;
                     fieldWos.Invalidate();
-
-                    NotifPopup.Warning(this, "WOS Duplikat",
-                        $"WOS '{wosInput}' sudah pernah diinput hari ini untuk\n" +
-                        $"terminal + aplikator + operator yang sama.\n\n" +
-                        "Silakan scan WOS lain.");
-
+                    NotifPopup.Warning(this, "WOS Sudah Pernah Diinput",
+                        $"WOS '{wosInput}' sudah pernah Anda input hari ini.\n\nSilakan scan WOS yang lain.");
                     txtWos.Focus();
                     txtWos.SelectAll();
                     return;
@@ -1009,126 +1183,25 @@ namespace ProjectCrimping
                 SetNButtonState(NState.Ready);
             };
 
-            // ===== ERASE TERMINAL =====
-            eraseTerminal.Click += (s, e) =>
-            {
-                txtTerminal.Clear();
-                txtAplikator.Clear();
-                txtWos.Clear();
-
-                LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
-                LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
-                LockField(fieldWos, txtWos, eraseWos, true);
-
-                ResetBorder(fieldTerminal, fieldAplikator, fieldWos);
-                ResetNState();
-                ClearTable();
-
-                txtLotno.Focus();
-            };
-
-            // ===== ERASE APLIKATOR =====
-            eraseAplikator.Click += (s, e) =>
-            {
-                txtAplikator.Clear();
-                txtWos.Clear();
-                LockField(fieldAplikator, txtAplikator, eraseAplikator, false);
-                LockField(fieldWos, txtWos, eraseWos, true);
-                ResetBorder(fieldAplikator, fieldWos);
-
-                ResetAfterSubmit();
-                ClearTable();
-
-                txtAplikator.Focus();
-            };
-
             // ===== ERASE WOS =====
             eraseWos.Click += (s, e) =>
             {
+                // POKA-YOKE: tombol erase tidak boleh membuka WOS sebelum APLIKATOR valid.
+                if (!txtAplikator.ReadOnly)
+                {
+                    FocusCurrentStep();
+                    return;
+                }
+
                 txtWos.Clear();
                 LockField(fieldWos, txtWos, eraseWos, false);
                 ResetBorder(fieldWos);
-
                 ResetAfterSubmit();
-
                 txtWos.Focus();
             };
 
-            card.Controls.Add(grid);
+            card.Controls.Add(row);
             return card;
-        }
-
-        private void AddField(TableLayoutPanel grid, int row, string label,
-                              string glyph, string fallback,
-                              out TextBox tb, out RoundedPanel field, out RoundedButton erase)
-        {
-            grid.Controls.Add(new Label
-            {
-                Text = label,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft,
-                ForeColor = TextSub,
-                Font = new Font("Segoe UI Semibold", 9.5f),
-                BackColor = Color.Transparent
-            }, 0, row);
-
-            var fld = new RoundedPanel
-            {
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 6, 0, 6),
-                Padding = new Padding(1),
-                Radius = 10,
-                FillColor = FieldBg,
-                BorderColor = FieldBorder,
-                FocusColor = Accent
-            };
-
-            var inner = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 9, 12, 0) };
-            var input = new TextBox
-            {
-                Dock = DockStyle.Fill,
-                BorderStyle = BorderStyle.None,
-                BackColor = FieldBg,
-                ForeColor = TextDark,
-                Font = AppThemeLogin.FontInput
-            };
-            inner.Controls.Add(input);
-
-            var icon = new Label { Dock = DockStyle.Left, Width = 44, AutoSize = false };
-            AppThemeLogin.ApplyIcon(icon, glyph, fallback, 12F, FieldIcon);
-
-            fld.Controls.Add(inner);
-            fld.Controls.Add(icon);
-
-            input.Enter += (s, e) =>
-            {
-                fld.Focused = true;
-                if (!input.ReadOnly) fld.BorderColor = Accent;
-                fld.Invalidate();
-            };
-            input.Leave += (s, e) =>
-            {
-                fld.Focused = false;
-                if (!input.ReadOnly) fld.BorderColor = FieldBorder;
-                fld.Invalidate();
-            };
-
-            tb = input;
-            field = fld;
-            grid.Controls.Add(fld, 1, row);
-
-            var er = new RoundedButton
-            {
-                Dock = DockStyle.Fill,
-                Margin = new Padding(10, 6, 0, 6),
-                IconGlyph = IcErase,
-                Radius = 10,
-                FillColor = AccentSoft,
-                BorderColor = AccentLine,
-                IconColor = Accent
-            };
-            erase = er;
-            grid.Controls.Add(er, 2, row);
         }
 
         // =====================================================
@@ -1141,8 +1214,8 @@ namespace ProjectCrimping
                 Text = "N1",
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0, 0, 0, 12),
-                Font = new Font("Segoe UI Semibold", 16f),
-                Radius = 14,
+                Font = new Font("Segoe UI Semibold", 13f),
+                Radius = 12,
                 FillColor = FieldBg,
                 BorderColor = FieldBorder,
                 TextColor = TextSub,
@@ -1238,10 +1311,10 @@ namespace ProjectCrimping
                     txtAplikator.Text.Trim(),
                     Session.Noreg))
             {
-                NotifPopup.Warning(this, "WOS Sudah Diinput",
-                    "WOS ini baru saja diinput oleh proses lain.\n" +
-                    "Data tidak disimpan untuk menghindari duplikat.\n\n" +
-                    "Silakan scan WOS lain.");
+                NotifPopup.Warning(this, "WOS Sudah Pernah Diinput",
+                    "WOS ini ternyata baru saja diinput.\n" +
+                    "Data tidak disimpan supaya tidak dobel.\n\n" +
+                    "Silakan scan WOS yang lain.");
 
                 _state.ClearN3();
                 SetNButtonState(NState.Ready);
@@ -1254,6 +1327,7 @@ namespace ProjectCrimping
                 return;
             }
 
+            // Clear WOS saja — LOT MATERIAL & APLIKATOR tetap terisi & locked
             txtWos.Clear();
             LockField(fieldWos, txtWos, eraseWos, false);
             ResetBorder(fieldWos);
@@ -1339,11 +1413,12 @@ namespace ProjectCrimping
             dgv.Columns.Add("colNg", "NG");
             dgv.Columns.Add("colTension", "TENSION");
 
+            // Lebar kolom — fixed, biar gak mepet & gak kepotong
             dgv.Columns["colNo"].Width = 45;
-            dgv.Columns["colLotNo"].Width = 130;
+            dgv.Columns["colLotNo"].Width = 150;
             dgv.Columns["colSkema"].Width = 80;
-            dgv.Columns["colTerminal"].Width = 100;
-            dgv.Columns["colAplikator"].Width = 110;
+            dgv.Columns["colTerminal"].Width = 120;
+            dgv.Columns["colAplikator"].Width = 130;
 
             foreach (var name in new[] { "colLotNo", "colSkema", "colTerminal", "colAplikator" })
             {
@@ -1377,10 +1452,6 @@ namespace ProjectCrimping
             dgv.Columns["colTension"].Width = 80;
             dgv.Columns["colTension"].MinimumWidth = 80;
 
-            foreach (DataGridViewColumn c in dgv.Columns)
-                c.FillWeight = c.Width;
-            dgv.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-
             dgv.Rows.Clear();
 
             card.Controls.Add(dgv);
@@ -1389,8 +1460,6 @@ namespace ProjectCrimping
 
         // =====================================================
         //  QUERY: tanggal PRODUKSI dari jam server SQL
-        //  Konsisten dengan LoadDataCrimping / IsWosDuplicate:
-        //  sebelum jam 06:00 masih dihitung hari kemarin.
         // =====================================================
         private DateTime? GetServerTanggalProduksi()
         {
@@ -1415,8 +1484,9 @@ SELECT CASE
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Ambil Tanggal Server",
-                    "Gagal mengambil tanggal dari server:\n\n" + ex.Message);
+                ShowFriendlyError("Tanggal Tidak Bisa Diambil",
+                    "Aplikasi belum bisa mengambil tanggal produksi.\nPeriksa koneksi jaringan lalu coba lagi.",
+                    ex, "GetServerTanggalProduksi");
                 return null;
             }
         }
@@ -1437,12 +1507,13 @@ SELECT CASE
                 string.IsNullOrWhiteSpace(mesin))
             {
                 NotifPopup.Warning(this, "Data Belum Lengkap",
-                    "Pastikan Terminal dan Aplikator sudah diisi, dan sesi login (Noreg & Mesin) valid.");
+                    "Isi dulu LOT MATERIAL dan APLIKATOR sebelum menekan EXPORT.\n\n" +
+                    "Kalau sudah terisi tapi pesan ini tetap muncul, silakan login ulang.");
                 return;
             }
 
             DateTime? tglServer = GetServerTanggalProduksi();
-            if (tglServer == null) return;   // error sudah ditampilkan di method
+            if (tglServer == null) return;
 
             string tanggal = tglServer.Value.ToString("yyyy-MM-dd");
             const string baseUrl = "http://192.168.5.4/laporan-crimping-manual/controllers/export.php";
@@ -1465,8 +1536,9 @@ SELECT CASE
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Gagal Membuka Browser",
-                    "Tidak dapat membuka URL export:\n\n" + ex.Message);
+                ShowFriendlyError("Laporan Tidak Bisa Dibuka",
+                    "Laporan belum bisa dibuka.\nPastikan komputer ini terhubung ke jaringan pabrik dan punya browser (Chrome/Edge).",
+                    ex, "ExportPdf");
             }
         }
 
@@ -1493,6 +1565,53 @@ SELECT CASE
             }
             field.Invalidate();
             erase.Enabled = true;
+        }
+
+        /// <summary>
+        /// POKA-YOKE: arahkan fokus ke field yang sedang gilirannya.
+        /// Urutan: LOT MATERIAL → APLIKATOR → WOS. Kalau semuanya sudah terkunci
+        /// (WOS valid, tinggal tombol N), tidak melakukan apa-apa.
+        /// </summary>
+        private void FocusCurrentStep()
+        {
+            if (!txtTerminal.ReadOnly) { txtTerminal.Focus(); return; }
+            if (!txtAplikator.ReadOnly) { txtAplikator.Focus(); return; }
+            if (!txtWos.ReadOnly) { txtWos.Focus(); return; }
+        }
+
+        /// <summary>
+        /// Taruh TextBox di tengah vertikal host-nya. Dipakai karena font input besar,
+        /// jadi tinggi TextBox tidak lagi sama dengan tinggi field.
+        /// </summary>
+        private static void CenterInput(Control host, TextBox tb)
+        {
+            tb.Dock = DockStyle.None;
+            tb.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+
+            void Relayout()
+            {
+                int w = Math.Max(10, host.ClientSize.Width - host.Padding.Right);
+                int y = Math.Max(0, (host.ClientSize.Height - tb.Height) / 2);
+                tb.SetBounds(0, y, w, tb.Height);
+            }
+
+            host.Resize += (s, e) => Relayout();
+            Relayout();
+        }
+
+        /// <summary>
+        /// Tampilkan error ke operator dengan bahasa awam.
+        /// Detail teknis (exception asli) TIDAK ditampilkan ke operator,
+        /// hanya dicatat ke Output/Trace supaya IT bisa menelusuri.
+        /// </summary>
+        private void ShowFriendlyError(string title, string message, Exception ex, string context)
+        {
+            string line = $"[ERROR {DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}: {ex}";
+            System.Diagnostics.Debug.WriteLine(line);
+            System.Diagnostics.Trace.WriteLine(line);
+
+            NotifPopup.Error(this, title,
+                message + "\n\nJika masih terjadi, hubungi atasan atau teknisi.");
         }
 
         private bool ValidateNotEmpty(TextBox tb, RoundedPanel field)
@@ -1551,7 +1670,7 @@ SELECT CASE
             if (btnN == null) return;
 
             btnN.Text = "N" + _nStep;
-            btnN.Font = new Font("Segoe UI Semibold", 16f);
+            btnN.Font = new Font("Segoe UI Semibold", 13f);
             btnN.IconGlyph = null;
 
             if (state == NState.Locked)
@@ -1578,13 +1697,6 @@ SELECT CASE
         // =====================================================
         //  RESET STATE
         // =====================================================
-
-        /// <summary>
-        /// Reset TOTAL.
-        /// Menghapus hasil N1/N2/N3 + patokan + sisi + Tiproductname.
-        /// Dipakai saat Lotno/Terminal direset → operator WAJIB
-        /// scan Lotno ulang sebelum bisa lanjut.
-        /// </summary>
         private void ResetNState()
         {
             _state.ClearAll();
@@ -1592,13 +1704,6 @@ SELECT CASE
             SetNButtonState(NState.Locked);
         }
 
-        /// <summary>
-        /// Reset SETELAH SUBMIT N3 / ERASE APLIKATOR / ERASE WOS.
-        /// Menghapus hasil N1/N2/N3 + patokan + sisi,
-        /// TAPI Tiproductname DIPERTAHANKAN.
-        /// Jadi operator bisa LANGSUNG scan WOS berikutnya tanpa
-        /// scan Lotno & Aplikator lagi.
-        /// </summary>
         private void ResetAfterSubmit()
         {
             _state.ClearN1();
@@ -1729,8 +1834,9 @@ ORDER BY created_at DESC;";
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Query",
-                    "Gagal memuat data dari database:\n\n" + ex.Message);
+                ShowFriendlyError("Riwayat Tidak Bisa Dimuat",
+                    "Tabel riwayat belum bisa ditampilkan.\nPeriksa koneksi jaringan lalu coba lagi.",
+                    ex, "LoadDataCrimping");
             }
         }
 
@@ -1744,6 +1850,13 @@ ORDER BY created_at DESC;";
 
         // =====================================================
         //  INSERT: simpan satu siklus N1+N2+N3
+        //
+        //  ⚠️  CATATAN BE (MENYUSUL):
+        //      Saat ini `lotno` diambil dari prefix WOS
+        //      (wos.Split('.')[0]). Kalau business rule berubah
+        //      dan `lotno` harus sama dengan LOT MATERIAL yang
+        //      di-scan operator, ganti jadi:
+        //          string lotno = txtTerminal.Text.Trim();
         // =====================================================
         private bool InsertLhhpWH()
         {
@@ -1804,8 +1917,8 @@ VALUES
                     int rows = cmd.ExecuteNonQuery();
                     if (rows <= 0)
                     {
-                        NotifPopup.Error(this, "Insert Gagal",
-                            "Insert tidak menyimpan data apapun. Cek kembali.");
+                        NotifPopup.Error(this, "Data Belum Tersimpan",
+                            "Data belum berhasil disimpan.\nSilakan coba lagi.");
                         return false;
                     }
 
@@ -1814,8 +1927,9 @@ VALUES
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Insert",
-                    "Gagal menyimpan data ke database:\n\n" + ex.Message);
+                ShowFriendlyError("Data Gagal Disimpan",
+                    "Data belum berhasil disimpan.\nPeriksa koneksi jaringan lalu coba lagi.",
+                    ex, "InsertLhhpWH");
                 return false;
             }
         }
@@ -1840,14 +1954,14 @@ VALUES
         }
 
         // =====================================================
-        //  QUERY: Lotno → tiproductname
+        //  QUERY: Lotno → tipartnumber
         // =====================================================
-        private string GetTiproductnameByLotno(string tlotid)
+        private string GetTipartnumberByLotno(string tlotid)
         {
             if (string.IsNullOrWhiteSpace(tlotid)) return null;
 
             const string sql = @"
-SELECT b.tiproductname
+SELECT b.tipartnumber
 FROM dbInventory2..tblFifo a
 LEFT JOIN dbInventory2..tblItem b ON b.tiid = a.tiid
 WHERE a.tlotid = @tlotid;";
@@ -1866,19 +1980,20 @@ WHERE a.tlotid = @tlotid;";
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Query Lotno",
-                    "Gagal mengambil tiproductname:\n\n" + ex.Message);
+                ShowFriendlyError("LOT MATERIAL Tidak Bisa Dicek",
+                    "Aplikasi belum bisa memeriksa LOT MATERIAL.\nPeriksa koneksi jaringan lalu scan ulang.",
+                    ex, "GetTipartnumberByLotno");
                 return null;
             }
         }
 
         // =====================================================
-        //  QUERY: tiproductname + WOS → patokan di TrRPHMesin
+        //  QUERY: tipartnumber + WOS → patokan di TrRPHMesin
         // =====================================================
-        private List<TerminalResult> CheckTerminal(string tiproductname, string wos)
+        private List<TerminalResult> CheckTerminal(string tipartnumber, string wos)
         {
             var list = new List<TerminalResult>();
-            if (string.IsNullOrWhiteSpace(tiproductname)) return list;
+            if (string.IsNullOrWhiteSpace(tipartnumber)) return list;
             if (string.IsNullOrWhiteSpace(wos)) return list;
 
             const string sql = @"
@@ -1886,7 +2001,7 @@ SELECT KodeMesin, TERMINALA, TERMINALB,
        cha, iha, cwa, iwa, T1,
        chb, ihb, cwb, iwb, T2
 FROM [KUJNAGN].[dbo].[TrRPHMesin]
-WHERE (TERMINALA = @tiproductname OR TERMINALB = @tiproductname)
+WHERE (TERMINALA = @tipartnumber OR TERMINALB = @tipartnumber)
   AND barcode = @wos
 ORDER BY KodeRPHMeisn DESC;";
 
@@ -1895,7 +2010,7 @@ ORDER BY KodeRPHMeisn DESC;";
                 using (var conn = _db.Open())
                 using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
                 {
-                    cmd.Parameters.AddWithValue("@tiproductname", tiproductname);
+                    cmd.Parameters.AddWithValue("@tipartnumber", tipartnumber);
                     cmd.Parameters.AddWithValue("@wos", wos);
 
                     using (var reader = cmd.ExecuteReader())
@@ -1905,7 +2020,7 @@ ORDER BY KodeRPHMeisn DESC;";
                             string termA = reader["TERMINALA"] as string;
                             string termB = reader["TERMINALB"] as string;
 
-                            if (termA == tiproductname)
+                            if (termA == tipartnumber)
                             {
                                 list.Add(new TerminalResult
                                 {
@@ -1919,7 +2034,7 @@ ORDER BY KodeRPHMeisn DESC;";
                                 });
                             }
 
-                            if (termB == tiproductname)
+                            if (termB == tipartnumber)
                             {
                                 list.Add(new TerminalResult
                                 {
@@ -1938,8 +2053,9 @@ ORDER BY KodeRPHMeisn DESC;";
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Query Terminal",
-                    "Gagal cek Terminal A/B:\n\n" + ex.Message);
+                ShowFriendlyError("WOS Tidak Bisa Dicek",
+                    "Aplikasi belum bisa memeriksa WOS.\nPeriksa koneksi jaringan lalu scan ulang.",
+                    ex, "CheckTerminal");
             }
 
             return list;
@@ -1969,8 +2085,9 @@ WHERE KodeAplikator LIKE '%' + @kode + '%';";
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Query Aplikator",
-                    "Gagal cek Aplikator ke database:\n\n" + ex.Message);
+                ShowFriendlyError("Aplikator Tidak Bisa Dicek",
+                    "Aplikasi belum bisa memeriksa aplikator.\nPeriksa koneksi jaringan lalu scan ulang.",
+                    ex, "CheckAplikator");
                 return false;
             }
         }
@@ -2020,8 +2137,9 @@ WHERE Wos = @wos
             }
             catch (Exception ex)
             {
-                NotifPopup.Error(this, "Error Cek Duplikat WOS",
-                    "Gagal cek WOS duplikat ke database:\n\n" + ex.Message);
+                ShowFriendlyError("WOS Tidak Bisa Dicek",
+                    "Aplikasi belum bisa memeriksa apakah WOS ini sudah pernah diinput.\nPeriksa koneksi jaringan lalu scan ulang.",
+                    ex, "IsWosDuplicate");
 
                 return true;
             }
@@ -2040,7 +2158,6 @@ WHERE Wos = @wos
 
             string skema = wos.Substring(idx + 1).Trim();
 
-            // Fleksibel: 1 s/d 5 digit angka
             if (skema.Length < 1 || skema.Length > 5) return false;
             if (!skema.All(char.IsDigit)) return false;
 
