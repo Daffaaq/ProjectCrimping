@@ -17,19 +17,21 @@ namespace ProjectCrimping
     /// ================================================================
     ///  RINGKASAN ALUR KERJA (urutan operator)
     /// ================================================================
-    ///  1. Scan LOT MATERIAL (field di Card 1) → cari tipartnumber
+    ///  1. Scan LOT MATERIAL (field di Card 1) → cari tipartnumber + tiid
     ///                                            di inventory.
-    ///                                            Simpan tipartnumber ke _state.
+    ///                                            Simpan LOT MATERIAL asli + tipartnumber
+    ///                                            + tiid ke _state.
+    ///                                            Field ditimpa tampilannya jadi tipartnumber.
     ///                                            (Patokan BELUM diambil di sini.)
     ///  2. Scan APLIKATOR (field di Card 1)    → divalidasi ke tabel MSAplikator,
     ///                                            lalu tabel riwayat hari ini dimuat.
     ///  3. Scan WOS (field di Card 2, format XXXX.001)
     ///                                         → validasi format; lalu cari patokan
-    ///                                            di TrRPHMesin dengan DUA syarat:
-    ///                                              - TERMINALA/TERMINALB = tipartnumber
-    ///                                              - barcode = WOS
-    ///                                            Kalau ketemu di sisi A dan B,
-    ///                                            operator memilih lewat FormPilihSisi.
+    ///                                            di TrRPHMesin dengan DUA kunci:
+    ///                                              - tipartnumber di TERMINALA/TERMINALB (PRIORITAS)
+    ///                                              - tiid          di RmiTermA/RmiTermB  (CADANGAN)
+    ///                                            Syarat kedua selalu: barcode = WOS.
+    ///                                            Ambil TOP 1 (kalau data dobel, ambil 1 saja).
     ///                                            Tombol N1 aktif setelah WOS valid.
     ///  4. Tekan N1 → N2 → N3 (1 tombol)       → tiap tombol membuka form input ukuran.
     ///                                            Setelah N3 + konfirmasi NG, data di-INSERT
@@ -37,8 +39,7 @@ namespace ProjectCrimping
     ///  5. Fokus kembali ke WOS                → operator bisa scan WOS berikutnya TANPA
     ///                                            scan ulang LOT MATERIAL/Aplikator, karena
     ///                                            ResetAfterSubmit() mempertahankan
-    ///                                            tipartnumber dan hanya menghapus
-    ///                                            patokan + hasil N1/N2/N3.
+    ///                                            LotMaterial + tipartnumber + tiid.
     ///
     /// ================================================================
     ///  STRUKTUR LAYOUT (BuildContent)
@@ -48,42 +49,33 @@ namespace ProjectCrimping
     ///   └─ Konten (Dock.Fill, TableLayoutPanel 1 kolom x 5 baris)
     ///        ├─ Baris 0 (AutoSize)   : Header judul
     ///        ├─ Baris 1 (156 px)     : Card 1 — LOT MATERIAL + APLIKATOR
-    ///        │                          (field tetap, tidak ganti-ganti)
     ///        ├─ Baris 2 (120 px)     : Card 2 — WOS
-    ///        │                          (ganti-ganti tiap selesai submit)
     ///        ├─ Baris 3 (52 px)      : Tombol dinamis N1/N2/N3
     ///        └─ Baris 4 (sisa ruang) : Tabel riwayat (DataGridView)
-    ///
-    ///  Seluruh UI dibangun lewat kode (BuildUI), BUKAN lewat Designer,
-    ///  jadi mengubah tampilan = ubah method Build* di file ini.
     ///
     /// ================================================================
     ///  CATATAN PENTING UNTUK MAINTAINER
     /// ================================================================
+    ///  - TIGA nilai dari LOT MATERIAL:
+    ///        * LotMaterial   = LOT MATERIAL asli yang discan operator
+    ///                          → DISIMPAN ke TrCrimpingResult.terminal
+    ///        * Tipartnumber  = hasil lookup dari tblItem
+    ///                          → DIPAKAI untuk cek TERMINALA/TERMINALB
+    ///                          → DIPAKAI sebagai TAMPILAN di field
+    ///        * Tiid          = hasil lookup dari tblFifo
+    ///                          → DIPAKAI sebagai CADANGAN cek RmiTermA/RmiTermB
     ///  - "Patokan" = nilai standar CH/IH/CW/IW/Tension dari TrRPHMesin,
     ///    diambil SETELAH WOS di-scan (karena butuh kolom barcode).
-    ///  - Field LOT MATERIAL memakai control `txtTerminal` (nama historis),
-    ///    isinya adalah tipartnumber hasil lookup dari Lot Material.
     ///  - Ada DUA jenis reset, jangan ketukar:
-    ///        * ResetNState()       → hapus SEMUA, termasuk Tipartnumber.
-    ///                                 Dipakai saat LOT MATERIAL direset,
-    ///                                 operator WAJIB scan LOT MATERIAL ulang.
+    ///        * ResetNState()       → hapus SEMUA, termasuk LotMaterial.
     ///        * ResetAfterSubmit()  → hapus hasil N + patokan + sisi,
-    ///                                 TAPI pertahankan Tipartnumber.
-    ///                                 Dipakai setelah simpan N3 sukses,
-    ///                                 erase Aplikator, dan erase WOS.
-    ///  - "Hari produksi" berjalan jam 06:00 s/d 06:00 hari berikutnya
-    ///    (lihat query di LoadDataCrimping).
-    ///  - Foto profil diambil dari URL:
-    ///        http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
-    ///    noreg & ext diambil dari Session (diisi di Login).
-    ///    Kalau gagal load → fallback ke AvatarCircle inisial.
-    ///  - Tabel yang dipakai masih TrCrimpingResult (tabel salinan).
-    ///  - Warna & font bersumber dari AppThemeLogin supaya konsisten
-    ///    dengan halaman Login.
-    ///  - TableLayoutPanel di dalam card WAJIB punya RowStyle eksplisit
-    ///    (Percent 100). Tanpa itu baris jadi AutoSize dan isi card
-    ///    terpotong (border field & label WOS kepotong).
+    ///                                 TAPI pertahankan LotMaterial + Tipartnumber + Tiid.
+    ///  - "Hari produksi" berjalan jam 06:00 s/d 06:00 hari berikutnya.
+    ///  - KUNCI WOS: CheckTerminal terima DUA kunci sekaligus:
+    ///        - tipartnumber → dicek ke TERMINALA / TERMINALB   (PRIORITAS)
+    ///        - tiid         → dicek ke RmiTermA  / RmiTermB    (CADANGAN)
+    ///    Cuma SATU panggilan CheckTerminal di txtWos.KeyDown.
+    ///    TOP 1 di SQL → ambil satu baris terbaik saja (antisipasi data dobel).
     /// </summary>
     public partial class Dashboard : Form
     {
@@ -103,7 +95,6 @@ namespace ProjectCrimping
         private static readonly Color SuccessColor = Color.FromArgb(46, 204, 113);
         private static readonly Color PageBg = Color.White;
 
-        /// <summary>Font besar untuk field scan (LOT MATERIAL, APLIKATOR, WOS) supaya mudah dibaca operator.</summary>
         private static readonly Font BigInputFont = new Font("Segoe UI Semibold", 18f);
 
         private static readonly Color FieldLockedBg = Color.FromArgb(238, 240, 243);
@@ -114,7 +105,6 @@ namespace ProjectCrimping
 
         // ================================================================
         //  KONSTANTA: URL FOTO PROFIL
-        //  Format: <base>{noreg}.{ext}
         // ================================================================
         private const string AvatarBaseUrl =
             "http://122.144.4.194:31985/indoprima_gemilang/public/img/";
@@ -133,8 +123,6 @@ namespace ProjectCrimping
         // ================================================================
         //  KONTROL UI
         // ================================================================
-        //  txtTerminal sekarang dipakai sebagai field "LOT MATERIAL"
-        //  (nama historis dipertahankan biar BE yang menyusul tidak bingung).
         private TextBox txtTerminal, txtAplikator, txtWos;
 
         private RoundedButton btnN;
@@ -144,7 +132,6 @@ namespace ProjectCrimping
         private RoundedPanel fieldTerminal, fieldAplikator, fieldWos;
         private RoundedButton eraseTerminal, eraseAplikator, eraseWos;
 
-        /// <summary>Foto profil operator dari URL. Menutupi AvatarCircle kalau berhasil load.</summary>
         private AvatarPicture _avatarPic;
 
         // ================================================================
@@ -194,8 +181,6 @@ namespace ProjectCrimping
             Controls.Add(BuildContent());
             Controls.Add(BuildSidebar());
 
-            // POKA-YOKE: urutan wajib LOT MATERIAL → APLIKATOR → WOS.
-            // Di awal hanya LOT MATERIAL yang terbuka.
             LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
             LockField(fieldWos, txtWos, eraseWos, true);
 
@@ -225,7 +210,20 @@ namespace ProjectCrimping
             public decimal? N3_IW { get; set; }
             public int? N3_NG { get; set; }
 
+            // ===== LOT MATERIAL ASLI (yang discan operator) =====
+            // Disimpan ke TrCrimpingResult.terminal.
+            // SENGAJA dipertahankan setelah submit (tidak dihapus di ClearPatokanOnly()).
+            public string LotMaterial { get; set; }
+
+            // ===== hasil lookup dari tblItem =====
+            // Dipakai untuk cek TERMINALA / TERMINALB di TrRPHMesin.
+            // Dipakai juga sebagai tampilan di field LOT MATERIAL.
             public string Tipartnumber { get; set; }
+
+            // ===== hasil lookup dari tblFifo =====
+            // Dipakai sebagai kunci CADANGAN: cek ke RmiTermA / RmiTermB.
+            public string Tiid { get; set; }
+
             public string SisiTerminal { get; set; }
             public decimal? PatokanCH { get; set; }
             public decimal? PatokanIH { get; set; }
@@ -236,17 +234,21 @@ namespace ProjectCrimping
             public void ClearN1() { N1_CH = null; N1_IH = null; N1_CW = null; N1_IW = null; N1_Tension = null; }
             public void ClearN2() { N2_CH = null; N2_IH = null; N2_CW = null; N2_IW = null; }
             public void ClearN3() { N3_CH = null; N3_IH = null; N3_CW = null; N3_IW = null; N3_NG = null; }
+
             public void ClearPatokan()
             {
+                LotMaterial = null;             // ===== ikut dihapus di reset total
                 Tipartnumber = null;
+                Tiid = null;
                 SisiTerminal = null;
                 PatokanCH = null; PatokanIH = null; PatokanCW = null; PatokanIW = null; PatokanTension = null;
             }
 
             /// <summary>
             /// Hapus patokan + sisi terminal saja.
-            /// Tipartnumber SENGAJA tidak dihapus — dipakai ResetAfterSubmit()
-            /// supaya operator bisa langsung scan WOS berikutnya.
+            /// LotMaterial + Tipartnumber + Tiid SENGAJA tidak dihapus —
+            /// dipakai ResetAfterSubmit() supaya operator bisa langsung scan
+            /// WOS berikutnya tanpa scan LOT MATERIAL ulang.
             /// </summary>
             public void ClearPatokanOnly()
             {
@@ -266,7 +268,6 @@ namespace ProjectCrimping
 
             var profile = new TransparentPanel { Dock = DockStyle.Top, Height = 215 };
 
-            // ---- AvatarCircle: fallback inisial (kalau foto gagal load) ----
             string initials = GetInitials(Session.Nama);
 
             var avatar = new AvatarCircle
@@ -280,7 +281,6 @@ namespace ProjectCrimping
                 InitialsColor = Accent
             };
 
-            // ---- PictureBox di atas AvatarCircle: foto dari URL ----
             _avatarPic = new AvatarPicture
             {
                 Size = new Size(92, 92),
@@ -412,9 +412,6 @@ namespace ProjectCrimping
             };
         }
 
-        // =====================================================
-        //  HELPER: inisial dari nama
-        // =====================================================
         private static string GetInitials(string nama)
         {
             if (string.IsNullOrWhiteSpace(nama)) return "?";
@@ -435,9 +432,6 @@ namespace ProjectCrimping
                 .ToUpperInvariant();
         }
 
-        // =====================================================
-        //  LOAD FOTO PROFIL DARI URL
-        // =====================================================
         private async Task LoadAvatarAsync()
         {
             void Log(string msg)
@@ -459,30 +453,22 @@ namespace ProjectCrimping
             string noreg = Session.Noreg;
             string ext = Session.ext;
 
-            Log($"Session.Noreg = '{noreg ?? "(null)"}'");
-            Log($"Session.ext   = '{ext ?? "(null)"}'");
-
             if (!string.IsNullOrWhiteSpace(ext))
                 ext = ext.TrimStart('.').Trim();
 
-            Log($"ext (setelah normalisasi) = '{ext ?? "(null)"}'");
-
             if (string.IsNullOrWhiteSpace(noreg))
             {
-                Log("STOP: noreg kosong → fallback inisial");
                 _avatarPic.Visible = false;
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(ext))
             {
-                Log("STOP: ext kosong → fallback inisial");
                 _avatarPic.Visible = false;
                 return;
             }
 
             string url = AvatarBaseUrl + Uri.EscapeDataString(noreg) + "." + ext;
-            Log($"URL final = {url}");
 
             try
             {
@@ -490,8 +476,6 @@ namespace ProjectCrimping
 
                 using (var wc = new WebClient())
                 {
-                    Log("Mulai download...");
-
                     var downloadTask = wc.DownloadDataTaskAsync(url);
                     var timeoutTask = Task.Delay(5000);
 
@@ -499,53 +483,18 @@ namespace ProjectCrimping
 
                     if (completed == timeoutTask)
                     {
-                        Log("TIMEOUT: download > 5 detik → fallback inisial");
                         _avatarPic.Visible = false;
                         return;
                     }
 
-                    if (downloadTask.IsFaulted)
-                    {
-                        Log($"DOWNLOAD FAULTED. Exception:");
-                        if (downloadTask.Exception != null)
-                        {
-                            foreach (var ex in downloadTask.Exception.Flatten().InnerExceptions)
-                            {
-                                Log($"   → {ex.GetType().Name}: {ex.Message}");
-                            }
-                        }
-                    }
-
                     data = await downloadTask;
-
-                    Log($"Download SELESAI. Panjang byte = {(data?.Length ?? 0)}");
                 }
 
                 if (data == null || data.Length == 0)
                 {
-                    Log("STOP: data null atau kosong → fallback inisial");
                     _avatarPic.Visible = false;
                     return;
                 }
-
-                string magic = BitConverter.ToString(data, 0, Math.Min(8, data.Length));
-                Log($"Magic bytes (8 pertama) = {magic}");
-
-                bool isJpeg = data.Length >= 3 &&
-                              data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
-                bool isPng = data.Length >= 4 &&
-                             data[0] == 0x89 && data[1] == 0x50 &&
-                             data[2] == 0x4E && data[3] == 0x47;
-
-                if (!isJpeg && !isPng)
-                {
-                    Log("WARNING: byte bukan JPEG/PNG. Kemungkinan server balikin HTML error.");
-                    int previewLen = Math.Min(200, data.Length);
-                    string preview = System.Text.Encoding.UTF8.GetString(data, 0, previewLen);
-                    Log($"Preview 200 char pertama:\n{preview}");
-                }
-
-                Log("Mulai Image.FromStream...");
 
                 Image img;
                 using (var ms = new System.IO.MemoryStream(data))
@@ -553,67 +502,35 @@ namespace ProjectCrimping
                     using (var raw = Image.FromStream(ms))
                     {
                         img = new Bitmap(raw);
-                        Log($"Image.FromStream OK. Ukuran asli = {raw.Width} x {raw.Height}");
                     }
                 }
 
-                Log("Bitmap copy OK. Set ke _avatarPic...");
-
                 if (InvokeRequired)
                 {
-                    Log("InvokeRequired = true → Invoke ke UI thread");
                     Invoke(new Action(() =>
                     {
                         _avatarPic.Image = img;
                         _avatarPic.Visible = true;
                         _avatarPic.BringToFront();
                         _avatarPic.Invalidate();
-                        Log("Foto ter-set + Visible=true + BringToFront");
                     }));
                 }
                 else
                 {
-                    Log("InvokeRequired = false → langsung set dari thread ini");
                     _avatarPic.Image = img;
                     _avatarPic.Visible = true;
                     _avatarPic.BringToFront();
                     _avatarPic.Invalidate();
-                    Log("Foto ter-set + Visible=true + BringToFront");
                 }
-
-                Log($"===== SUKSES: {url} =====");
             }
-            catch (WebException wex)
+            catch (WebException)
             {
-                Log("===== WebException =====");
-                Log($"Status      = {wex.Status}");
-                Log($"Message     = {wex.Message}");
-
-                if (wex.Response is System.Net.HttpWebResponse resp)
-                {
-                    Log($"HTTP Status = {(int)resp.StatusCode} {resp.StatusCode}");
-                }
-
-                if (_avatarPic != null)
-                    _avatarPic.Visible = false;
+                if (_avatarPic != null) _avatarPic.Visible = false;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
-                Log("===== Exception umum =====");
-                Log($"Tipe    = {ex.GetType().FullName}");
-                Log($"Message = {ex.Message}");
-                Log($"Stack   =\n{ex.StackTrace}");
-
-                if (ex.InnerException != null)
-                {
-                    Log($"Inner Exception = {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
-                }
-
-                if (_avatarPic != null)
-                    _avatarPic.Visible = false;
+                if (_avatarPic != null) _avatarPic.Visible = false;
             }
-
-            Log("===== SELESAI LoadAvatarAsync =====");
         }
 
         // =====================================================
@@ -630,11 +547,11 @@ namespace ProjectCrimping
                 RowCount = 5
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // Header
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));  // LOT MATERIAL + APLIKATOR
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));  // WOS
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));   // Tombol N
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // Tabel
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 156));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             main.Controls.Add(BuildHeader(), 0, 0);
             main.Controls.Add(BuildLotMaterialCard(), 0, 1);
@@ -685,15 +602,6 @@ namespace ProjectCrimping
 
         // =====================================================
         //  CARD 1: LOT MATERIAL + APLIKATOR
-        //
-        //  Layout per-kolom:
-        //    [Label LOT MATERIAL]        [Label APLIKATOR]
-        //    [Field LOT MATERIAL] [🗑]    [Field APLIKATOR] [🗑]
-        //
-        //  Field di card ini TETAP (tidak ganti-ganti) selama operator
-        //  belum menekan tombol erase. Setelah N3 submit sukses,
-        //  field ini tetap terisi & locked — operator bisa langsung
-        //  scan WOS berikutnya di Card 2.
         // =====================================================
         private Control BuildLotMaterialCard()
         {
@@ -707,7 +615,6 @@ namespace ProjectCrimping
                 BorderColor = FieldBorder
             };
 
-            // 2 kolom sejajar: LOT MATERIAL | APLIKATOR
             var grid = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -717,7 +624,7 @@ namespace ProjectCrimping
             };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // FIX: tinggi baris pasti, tidak AutoSize
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             // ---------- Kolom kiri: LOT MATERIAL ----------
             var colLot = new TableLayoutPanel
@@ -857,8 +764,6 @@ namespace ProjectCrimping
             txtAplikator.Enter += (s, e) => { fldApl.Focused = true; if (!txtAplikator.ReadOnly) fldApl.BorderColor = Accent; fldApl.Invalidate(); };
             txtAplikator.Leave += (s, e) => { fldApl.Focused = false; if (!txtAplikator.ReadOnly) fldApl.BorderColor = FieldBorder; fldApl.Invalidate(); };
 
-            // POKA-YOKE: kalau operator klik/tab ke APLIKATOR yang masih terkunci,
-            // fokus dipindah paksa ke field yang memang gilirannya.
             txtAplikator.Enter += (s, e) =>
             {
                 if (txtAplikator.ReadOnly) BeginInvoke(new Action(FocusCurrentStep));
@@ -873,8 +778,8 @@ namespace ProjectCrimping
 
                 string lotMaterial = txtTerminal.Text.Trim();
 
-                string tipartnumber = GetTipartnumberByLotno(lotMaterial);
-                if (string.IsNullOrEmpty(tipartnumber))
+                LotInfo lotInfo = GetLotInfoByLotno(lotMaterial);
+                if (lotInfo == null || string.IsNullOrEmpty(lotInfo.Tipartnumber))
                 {
                     fieldTerminal.BorderColor = ErrorColor;
                     fieldTerminal.Invalidate();
@@ -887,12 +792,13 @@ namespace ProjectCrimping
                     return;
                 }
 
-                _state.Tipartnumber = tipartnumber;
+                // ===== SIMPAN TIGA NILAI =====
+                _state.LotMaterial = lotMaterial;              // ← yang DISIMPAN ke DB
+                _state.Tipartnumber = lotInfo.Tipartnumber;    // ← untuk cek TERMINALA/TERMINALB + tampilan
+                _state.Tiid = lotInfo.Tiid;                    // ← cadangan: cek RmiTermA/RmiTermB
 
-                // Field LOT MATERIAL langsung berubah jadi tipartnumber hasil lookup.
-                // Nilai ini yang kemudian dipakai sebagai "terminal" di
-                // LoadDataCrimping, IsWosDuplicate, InsertLhhpWH, dan ExportPdf.
-                txtTerminal.Text = tipartnumber;
+                // Tampilan field diganti jadi tipartnumber (biar operator tahu materialnya).
+                txtTerminal.Text = lotInfo.Tipartnumber;
 
                 FlashSuccess(fieldTerminal);
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
@@ -907,9 +813,8 @@ namespace ProjectCrimping
                 if (e.KeyCode != Keys.Enter) return;
                 e.SuppressKeyPress = true;
 
-                // POKA-YOKE: field terkunci → abaikan; LOT MATERIAL belum valid → tolak.
                 if (txtAplikator.ReadOnly) return;
-                if (string.IsNullOrEmpty(_state.Tipartnumber))
+                if (string.IsNullOrEmpty(_state.LotMaterial))
                 {
                     NotifPopup.Warning(this, "Urutan Salah",
                         "Scan LOT MATERIAL dulu sebelum APLIKATOR.");
@@ -940,8 +845,9 @@ namespace ProjectCrimping
                 LockField(fieldWos, txtWos, eraseWos, false);
                 txtWos.Focus();
 
+                // Pakai LOT MATERIAL asli (bukan txtTerminal.Text yang sudah tipartnumber)
                 LoadDataCrimping(
-                    txtTerminal.Text.Trim(),
+                    _state.LotMaterial,
                     kodeAplikator,
                     Session.Noreg);
             };
@@ -967,8 +873,7 @@ namespace ProjectCrimping
             // ===== ERASE APLIKATOR =====
             eraseAplikator.Click += (s, e) =>
             {
-                // POKA-YOKE: tombol erase tidak boleh membuka APLIKATOR sebelum LOT MATERIAL valid.
-                if (string.IsNullOrEmpty(_state.Tipartnumber))
+                if (string.IsNullOrEmpty(_state.LotMaterial))
                 {
                     FocusCurrentStep();
                     return;
@@ -993,13 +898,6 @@ namespace ProjectCrimping
 
         // =====================================================
         //  CARD 2: WOS
-        //
-        //  Layout horizontal:
-        //    [WOS]  [Field WOS .............] [🗑]
-        //
-        //  Field di card ini GANTI-GANTI tiap selesai submit N3.
-        //  Setelah submit sukses, WOS dikosongkan & di-unlock,
-        //  sementara LOT MATERIAL + APLIKATOR tetap locked di Card 1.
         // =====================================================
         private Control BuildWosCard()
         {
@@ -1020,10 +918,10 @@ namespace ProjectCrimping
                 ColumnCount = 3,
                 RowCount = 1
             };
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));    // label WOS (was 130)
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
-            row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));          // FIX: tinggi baris pasti, tidak AutoSize
+            row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             row.Controls.Add(new Label
             {
@@ -1076,12 +974,9 @@ namespace ProjectCrimping
             };
             row.Controls.Add(eraseWos, 2, 0);
 
-            // Focus event
             txtWos.Enter += (s, e) => { fld.Focused = true; if (!txtWos.ReadOnly) fld.BorderColor = Accent; fld.Invalidate(); };
             txtWos.Leave += (s, e) => { fld.Focused = false; if (!txtWos.ReadOnly) fld.BorderColor = FieldBorder; fld.Invalidate(); };
 
-            // POKA-YOKE: kalau operator klik/tab ke WOS yang masih terkunci,
-            // fokus dipindah paksa ke field yang memang gilirannya.
             txtWos.Enter += (s, e) =>
             {
                 if (txtWos.ReadOnly) BeginInvoke(new Action(FocusCurrentStep));
@@ -1093,7 +988,6 @@ namespace ProjectCrimping
                 if (e.KeyCode != Keys.Enter) return;
                 e.SuppressKeyPress = true;
 
-                // POKA-YOKE: field terkunci → abaikan; APLIKATOR belum valid → tolak.
                 if (txtWos.ReadOnly) return;
                 if (!txtAplikator.ReadOnly)
                 {
@@ -1119,7 +1013,7 @@ namespace ProjectCrimping
                     return;
                 }
 
-                if (string.IsNullOrEmpty(_state.Tipartnumber))
+                if (string.IsNullOrEmpty(_state.LotMaterial))
                 {
                     NotifPopup.Warning(this, "LOT MATERIAL Belum Discan",
                         "Scan LOT MATERIAL dulu sebelum WOS.");
@@ -1127,7 +1021,11 @@ namespace ProjectCrimping
                     return;
                 }
 
-                var results = CheckTerminal(_state.Tipartnumber, wosInput);
+                // ===== KUNCI WOS: satu panggilan, dua kunci =====
+                // - tipartnumber → dicek ke TERMINALA / TERMINALB (PRIORITAS)
+                // - tiid         → dicek ke RmiTermA  / RmiTermB  (CADANGAN)
+                var results = CheckTerminal(_state.Tipartnumber, _state.Tiid, wosInput);
+
                 if (results.Count == 0)
                 {
                     fieldWos.BorderColor = ErrorColor;
@@ -1140,24 +1038,8 @@ namespace ProjectCrimping
                     return;
                 }
 
-                TerminalResult selected = null;
-                if (results.Count > 1)
-                {
-                    using (var f = new FormPilihSisi(results))
-                    {
-                        if (f.ShowDialog(this) != DialogResult.OK)
-                        {
-                            txtWos.Focus();
-                            txtWos.SelectAll();
-                            return;
-                        }
-                        selected = f.SelectedResult;
-                    }
-                }
-                else
-                {
-                    selected = results[0];
-                }
+                // TOP 1 sudah dijamin di SQL, tapi ambil index 0 untuk aman.
+                TerminalResult selected = results[0];
 
                 _state.SisiTerminal = selected.Sisi;
                 _state.PatokanCH = selected.CH;
@@ -1166,7 +1048,8 @@ namespace ProjectCrimping
                 _state.PatokanIW = selected.IW;
                 _state.PatokanTension = selected.Tension;
 
-                if (IsWosDuplicate(wosInput, txtTerminal.Text.Trim(), txtAplikator.Text.Trim(), Session.Noreg))
+                // Cek duplikat pakai LOT MATERIAL asli (bukan tipartnumber)
+                if (IsWosDuplicate(wosInput, _state.LotMaterial, txtAplikator.Text.Trim(), Session.Noreg))
                 {
                     fieldWos.BorderColor = ErrorColor;
                     fieldWos.Invalidate();
@@ -1186,7 +1069,6 @@ namespace ProjectCrimping
             // ===== ERASE WOS =====
             eraseWos.Click += (s, e) =>
             {
-                // POKA-YOKE: tombol erase tidak boleh membuka WOS sebelum APLIKATOR valid.
                 if (!txtAplikator.ReadOnly)
                 {
                     FocusCurrentStep();
@@ -1305,9 +1187,10 @@ namespace ProjectCrimping
                 _state.N3_NG = fng.HasNG ? (int?)fng.NGValue : null;
             }
 
+            // Cek duplikat pakai LOT MATERIAL asli
             if (IsWosDuplicate(
                     txtWos.Text.Trim(),
-                    txtTerminal.Text.Trim(),
+                    _state.LotMaterial,
                     txtAplikator.Text.Trim(),
                     Session.Noreg))
             {
@@ -1327,7 +1210,6 @@ namespace ProjectCrimping
                 return;
             }
 
-            // Clear WOS saja — LOT MATERIAL & APLIKATOR tetap terisi & locked
             txtWos.Clear();
             LockField(fieldWos, txtWos, eraseWos, false);
             ResetBorder(fieldWos);
@@ -1413,7 +1295,6 @@ namespace ProjectCrimping
             dgv.Columns.Add("colNg", "NG");
             dgv.Columns.Add("colTension", "TENSION");
 
-            // Lebar kolom — fixed, biar gak mepet & gak kepotong
             dgv.Columns["colNo"].Width = 45;
             dgv.Columns["colLotNo"].Width = 150;
             dgv.Columns["colSkema"].Width = 80;
@@ -1458,9 +1339,6 @@ namespace ProjectCrimping
             return card;
         }
 
-        // =====================================================
-        //  QUERY: tanggal PRODUKSI dari jam server SQL
-        // =====================================================
         private DateTime? GetServerTanggalProduksi()
         {
             const string sql = @"
@@ -1493,12 +1371,15 @@ SELECT CASE
 
         // =====================================================
         //  EXPORT PDF
+        //
+        //  Yang dikirim ke report: LOT MATERIAL asli (bukan tipartnumber).
+        //  Report PHP nanti yang akan lookup tipartnumber via tblFifo/tblItem.
         // =====================================================
         private void ExportPdf()
         {
             string noreg = Session.Noreg;
             string aplikator = txtAplikator?.Text?.Trim();
-            string terminal = txtTerminal?.Text?.Trim();
+            string terminal = _state.LotMaterial;         // ← LOT MATERIAL ASLI
             string mesin = Session.mesin;
 
             if (string.IsNullOrWhiteSpace(noreg) ||
@@ -1516,7 +1397,7 @@ SELECT CASE
             if (tglServer == null) return;
 
             string tanggal = tglServer.Value.ToString("yyyy-MM-dd");
-            const string baseUrl = "http://192.168.5.4/laporan-crimping-manual/controllers/export.php";
+            const string baseUrl = "http://192.168.5.4:8080/laporan-crimping-manual/controllers/export.php";
 
             string url =
                 $"{baseUrl}?action=export_pdf" +
@@ -1567,11 +1448,6 @@ SELECT CASE
             erase.Enabled = true;
         }
 
-        /// <summary>
-        /// POKA-YOKE: arahkan fokus ke field yang sedang gilirannya.
-        /// Urutan: LOT MATERIAL → APLIKATOR → WOS. Kalau semuanya sudah terkunci
-        /// (WOS valid, tinggal tombol N), tidak melakukan apa-apa.
-        /// </summary>
         private void FocusCurrentStep()
         {
             if (!txtTerminal.ReadOnly) { txtTerminal.Focus(); return; }
@@ -1579,10 +1455,6 @@ SELECT CASE
             if (!txtWos.ReadOnly) { txtWos.Focus(); return; }
         }
 
-        /// <summary>
-        /// Taruh TextBox di tengah vertikal host-nya. Dipakai karena font input besar,
-        /// jadi tinggi TextBox tidak lagi sama dengan tinggi field.
-        /// </summary>
         private static void CenterInput(Control host, TextBox tb)
         {
             tb.Dock = DockStyle.None;
@@ -1599,11 +1471,6 @@ SELECT CASE
             Relayout();
         }
 
-        /// <summary>
-        /// Tampilkan error ke operator dengan bahasa awam.
-        /// Detail teknis (exception asli) TIDAK ditampilkan ke operator,
-        /// hanya dicatat ke Output/Trace supaya IT bisa menelusuri.
-        /// </summary>
         private void ShowFriendlyError(string title, string message, Exception ex, string context)
         {
             string line = $"[ERROR {DateTime.Now:yyyy-MM-dd HH:mm:ss}] {context}: {ex}";
@@ -1722,6 +1589,8 @@ SELECT CASE
 
         // =====================================================
         //  QUERY: LoadDataCrimping
+        //
+        //  Parameter `terminal` = LOT MATERIAL asli (bukan tipartnumber).
         // =====================================================
         private void LoadDataCrimping(string terminal, string aplikator, string noreg)
         {
@@ -1843,7 +1712,7 @@ ORDER BY created_at DESC;";
         private void RefreshTable()
         {
             LoadDataCrimping(
-                txtTerminal.Text.Trim(),
+                _state.LotMaterial,              // ← LOT MATERIAL ASLI
                 txtAplikator.Text.Trim(),
                 Session.Noreg);
         }
@@ -1851,16 +1720,12 @@ ORDER BY created_at DESC;";
         // =====================================================
         //  INSERT: simpan satu siklus N1+N2+N3
         //
-        //  ⚠️  CATATAN BE (MENYUSUL):
-        //      Saat ini `lotno` diambil dari prefix WOS
-        //      (wos.Split('.')[0]). Kalau business rule berubah
-        //      dan `lotno` harus sama dengan LOT MATERIAL yang
-        //      di-scan operator, ganti jadi:
-        //          string lotno = txtTerminal.Text.Trim();
+        //  Yang disimpan ke kolom `terminal`: LOT MATERIAL asli.
+        //  (bukan tipartnumber — tipartnumber cuma untuk cek & tampilan)
         // =====================================================
         private bool InsertLhhpWH()
         {
-            string terminal = txtTerminal.Text.Trim();
+            string terminal = _state.LotMaterial ?? "";    // ← LOT MATERIAL ASLI
             string aplikator = txtAplikator.Text.Trim();
             string wos = txtWos.Text.Trim();
             string lotno = wos.Split('.')[0];
@@ -1954,14 +1819,23 @@ VALUES
         }
 
         // =====================================================
-        //  QUERY: Lotno → tipartnumber
+        //  INNER CLASS: LotInfo
         // =====================================================
-        private string GetTipartnumberByLotno(string tlotid)
+        private class LotInfo
+        {
+            public string Tipartnumber { get; set; }
+            public string Tiid { get; set; }
+        }
+
+        // =====================================================
+        //  QUERY: Lotno → tipartnumber + tiid
+        // =====================================================
+        private LotInfo GetLotInfoByLotno(string tlotid)
         {
             if (string.IsNullOrWhiteSpace(tlotid)) return null;
 
             const string sql = @"
-SELECT b.tipartnumber
+SELECT a.tiid, b.tipartnumber
 FROM dbInventory2..tblFifo a
 LEFT JOIN dbInventory2..tblItem b ON b.tiid = a.tiid
 WHERE a.tlotid = @tlotid;";
@@ -1972,55 +1846,93 @@ WHERE a.tlotid = @tlotid;";
                 using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
                 {
                     cmd.Parameters.AddWithValue("@tlotid", tlotid);
-                    var result = cmd.ExecuteScalar();
-                    return result == null || result == DBNull.Value
-                        ? null
-                        : result.ToString().Trim();
+
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (!reader.Read()) return null;
+
+                        return new LotInfo
+                        {
+                            Tipartnumber = reader["tipartnumber"] == DBNull.Value
+                                ? null
+                                : reader["tipartnumber"].ToString().Trim(),
+                            Tiid = reader["tiid"] == DBNull.Value
+                                ? null
+                                : reader["tiid"].ToString().Trim()
+                        };
+                    }
                 }
             }
             catch (Exception ex)
             {
                 ShowFriendlyError("LOT MATERIAL Tidak Bisa Dicek",
                     "Aplikasi belum bisa memeriksa LOT MATERIAL.\nPeriksa koneksi jaringan lalu scan ulang.",
-                    ex, "GetTipartnumberByLotno");
+                    ex, "GetLotInfoByLotno");
                 return null;
             }
         }
 
         // =====================================================
-        //  QUERY: tipartnumber + WOS → patokan di TrRPHMesin
+        //  QUERY: cari patokan di TrRPHMesin (TOP 1)
+        //
+        //  Menerima DUA kunci:
+        //    - tipartnumber → dicek ke TERMINALA / TERMINALB  (PRIORITAS)
+        //    - tiid         → dicek ke RmiTermA  / RmiTermB   (CADANGAN)
         // =====================================================
-        private List<TerminalResult> CheckTerminal(string tipartnumber, string wos)
+        private List<TerminalResult> CheckTerminal(string tipartnumber, string tiid, string wos)
         {
             var list = new List<TerminalResult>();
-            if (string.IsNullOrWhiteSpace(tipartnumber)) return list;
+
             if (string.IsNullOrWhiteSpace(wos)) return list;
+            if (string.IsNullOrWhiteSpace(tipartnumber) && string.IsNullOrWhiteSpace(tiid)) return list;
 
             const string sql = @"
-SELECT KodeMesin, TERMINALA, TERMINALB,
+SELECT TOP 1 
+       KodeMesin, TERMINALA, TERMINALB, RmiTermA, RmiTermB,
        cha, iha, cwa, iwa, T1,
        chb, ihb, cwb, iwb, T2
 FROM [KUJNAGN].[dbo].[TrRPHMesin]
-WHERE (TERMINALA = @tipartnumber OR TERMINALB = @tipartnumber)
+WHERE (
+        (@tipartnumber IS NOT NULL AND (TERMINALA = @tipartnumber OR TERMINALB = @tipartnumber))
+     OR (@tiid IS NOT NULL AND (RmiTermA = @tiid OR RmiTermB = @tiid))
+      )
   AND barcode = @wos
-ORDER BY KodeRPHMeisn DESC;";
+ORDER BY 
+    CASE 
+        WHEN @tipartnumber IS NOT NULL 
+             AND (TERMINALA = @tipartnumber OR TERMINALB = @tipartnumber) 
+        THEN 0 
+        ELSE 1 
+    END,
+    KodeRPHMeisn DESC;";
 
             try
             {
                 using (var conn = _db.Open())
                 using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
                 {
-                    cmd.Parameters.AddWithValue("@tipartnumber", tipartnumber);
+                    cmd.Parameters.AddWithValue("@tipartnumber",
+                        string.IsNullOrWhiteSpace(tipartnumber) ? (object)DBNull.Value : tipartnumber);
+                    cmd.Parameters.AddWithValue("@tiid",
+                        string.IsNullOrWhiteSpace(tiid) ? (object)DBNull.Value : tiid);
                     cmd.Parameters.AddWithValue("@wos", wos);
 
                     using (var reader = cmd.ExecuteReader())
                     {
-                        while (reader.Read())
+                        if (reader.Read())
                         {
                             string termA = reader["TERMINALA"] as string;
                             string termB = reader["TERMINALB"] as string;
+                            string rmiA = reader["RmiTermA"] as string;
+                            string rmiB = reader["RmiTermB"] as string;
 
-                            if (termA == tipartnumber)
+                            bool matchA = (!string.IsNullOrEmpty(tipartnumber) && termA == tipartnumber)
+                                       || (!string.IsNullOrEmpty(tiid) && rmiA == tiid);
+
+                            bool matchB = (!string.IsNullOrEmpty(tipartnumber) && termB == tipartnumber)
+                                       || (!string.IsNullOrEmpty(tiid) && rmiB == tiid);
+
+                            if (matchA)
                             {
                                 list.Add(new TerminalResult
                                 {
@@ -2034,7 +1946,7 @@ ORDER BY KodeRPHMeisn DESC;";
                                 });
                             }
 
-                            if (termB == tipartnumber)
+                            if (matchB)
                             {
                                 list.Add(new TerminalResult
                                 {
@@ -2094,6 +2006,8 @@ WHERE KodeAplikator LIKE '%' + @kode + '%';";
 
         // =====================================================
         //  QUERY: cek WOS duplikat
+        //
+        //  Parameter `terminal` = LOT MATERIAL asli.
         // =====================================================
         private bool IsWosDuplicate(string wos, string terminal, string aplikator, string noreg)
         {

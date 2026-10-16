@@ -264,8 +264,7 @@ namespace ProjectCrimping
                             terminalb
                         FROM trrphmesin
                         WHERE lotno = @lotNo
-                          AND seqnoint = @seqNo
-                          AND tanggalhasil IS NULL";
+                          AND seqnoint = @seqNo";
 
                     using (SqlCommand cmd =
                         new SqlCommand(query, conn))
