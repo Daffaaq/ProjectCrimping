@@ -64,6 +64,15 @@ namespace ProjectCrimping
         private string _lastMchArea = null;
         private string _lastMchNo = null;
 
+        // ================================================================
+        //  CACHE HASIL VALIDASI OPERATOR
+        //  Dipakai saat login supaya tidak query ulang, dan untuk
+        //  mengisi Session.ext (extension foto profil) di Dashboard.
+        // ================================================================
+        private string _lastOperatorNoreg = null;
+        private string _lastOperatorNama = null;
+        private string _lastOperatorExt = null;
+
         public Login()
         {
             AppThemeLogin.LoadLocalFonts();
@@ -127,6 +136,11 @@ namespace ProjectCrimping
             {
                 AppThemeLogin.ClearFieldError(pnlFieldOperator, lblErrOperator);
                 AppThemeLogin.ClearHintChip(lblHintOperator);
+
+                // Reset cache operator — kalau text berubah, data lama invalid
+                _lastOperatorNoreg = null;
+                _lastOperatorNama = null;
+                _lastOperatorExt = null;
             };
 
             txtNoRegOperator.KeyDown += async (s, e) =>
@@ -332,6 +346,14 @@ namespace ProjectCrimping
 
         // ================================================================
         //  LOOKUP OPERATOR
+        //
+        //  Ambil `nama` DAN `ext` dari DB_PEGAWAI.
+        //  - `nama` dipakai untuk hint chip
+        //  - `ext` dipakai untuk membentuk URL foto profil di Dashboard:
+        //      http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
+        //
+        //  Hasil disimpan di field _lastOperator* supaya tidak query ulang
+        //  saat BtnLogin_Click().
         // ================================================================
         private async Task LookupOperatorAsync()
         {
@@ -345,24 +367,38 @@ namespace ProjectCrimping
                 AppThemeLogin.ClearHintChip(lblHintOperator);
                 AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
                     "Noreg Tidak Sesuai Format");
+
+                _lastOperatorNoreg = null;
+                _lastOperatorNama = null;
+                _lastOperatorExt = null;
                 return;
             }
 
             try
             {
-                string nama = await Task.Run(() =>
+                string nama = null;
+                string ext = null;
+
+                await Task.Run(() =>
                 {
                     using (var conn = _db.Open())
                     using (var cmd = new SqlCommand(
-                        "SELECT TOP 1 nama FROM DB_PEGAWAI WHERE noreg = @noreg", (SqlConnection)conn))
+                        @"SELECT TOP 1 nama, ext 
+                          FROM DB_PEGAWAI 
+                          WHERE noreg = @noreg",
+                        (SqlConnection)conn))
                     {
                         cmd.CommandTimeout = 10;
                         cmd.Parameters.AddWithValue("@noreg", noreg);
 
-                        var result = cmd.ExecuteScalar();
-                        return (result == null || result == DBNull.Value)
-                            ? null
-                            : result.ToString();
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            if (reader.Read())
+                            {
+                                nama = reader["nama"] as string;
+                                ext = reader["ext"] as string;
+                            }
+                        }
                     }
                 });
 
@@ -371,11 +407,20 @@ namespace ProjectCrimping
                     AppThemeLogin.ClearHintChip(lblHintOperator);
                     AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
                         "No Reg Operator tidak ditemukan");
+
+                    _lastOperatorNoreg = null;
+                    _lastOperatorNama = null;
+                    _lastOperatorExt = null;
                 }
                 else
                 {
                     AppThemeLogin.ClearFieldError(pnlFieldOperator, lblErrOperator);
                     AppThemeLogin.SetHintChip(lblHintOperator, nama);
+
+                    // Simpan untuk dipakai BtnLogin_Click()
+                    _lastOperatorNoreg = noreg;
+                    _lastOperatorNama = nama;
+                    _lastOperatorExt = ext;   // boleh null kalau kolom ext kosong
                 }
             }
             catch (Exception ex)
@@ -383,6 +428,10 @@ namespace ProjectCrimping
                 AppThemeLogin.ClearHintChip(lblHintOperator);
                 AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
                     "Gagal akses DB: " + ex.Message);
+
+                _lastOperatorNoreg = null;
+                _lastOperatorNama = null;
+                _lastOperatorExt = null;
             }
         }
 
@@ -641,7 +690,8 @@ namespace ProjectCrimping
 
                 // ---- Isi Session ----
                 Session.Noreg = noRegOperator;
-                Session.Nama = lblHintOperator.Text;
+                Session.Nama = _lastOperatorNama ?? lblHintOperator.Text;
+                Session.ext = _lastOperatorExt;   // <- extension foto profil
                 Session.Shift = int.TryParse(shiftValue, out int sh) ? sh : 0;
                 Session.IsLoggedIn = true;
 
@@ -652,6 +702,7 @@ namespace ProjectCrimping
 
                 System.Diagnostics.Debug.WriteLine(
                     $"LOGIN => Operator={noRegOperator} ({Session.Nama}), " +
+                    $"Ext={Session.ext ?? "(null)"}, " +
                     $"Shift={Session.Shift}, " +
                     $"MesinRaw={_lastMesinRaw}, " +
                     $"MesinName={_lastMchName}, " +
@@ -700,6 +751,10 @@ namespace ProjectCrimping
             _lastMchName = null;
             _lastMchArea = null;
             _lastMchNo = null;
+
+            _lastOperatorNoreg = null;
+            _lastOperatorNama = null;
+            _lastOperatorExt = null;
 
             _busy = false;
             btnLogin.Enabled = true;

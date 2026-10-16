@@ -5,6 +5,8 @@ using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Net;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ProjectCrimping
@@ -15,19 +17,26 @@ namespace ProjectCrimping
     /// ================================================================
     ///  RINGKASAN ALUR KERJA (urutan operator)
     /// ================================================================
-    ///  1. Scan LOTNO (bar di atas)        → cari tiproductname di inventory,
-    ///                                       lalu cari patokan (standar ukuran)
-    ///                                       Terminal A/B di TrRPHMesin.
-    ///                                       Kalau terminal ada di sisi A dan B,
-    ///                                       operator memilih sisi lewat FormPilihSisi.
+    ///  1. Scan LOTNO (bar di atas)        → cari tiproductname di inventory.
+    ///                                       Simpan tiproductname ke _state.
+    ///                                       (Patokan BELUM diambil di sini.)
     ///  2. Scan APLIKATOR                  → divalidasi ke tabel MSAplikator,
     ///                                       lalu tabel riwayat hari ini dimuat.
-    ///  3. Scan WOS (format XXXX.001)      → validasi format; tombol N1 aktif.
+    ///  3. Scan WOS (format XXXX.001)      → validasi format; lalu cari patokan
+    ///                                       di TrRPHMesin dengan DUA syarat:
+    ///                                         - TERMINALA/TERMINALB = tiproductname
+    ///                                         - barcode = WOS
+    ///                                       Kalau ketemu di sisi A dan B,
+    ///                                       operator memilih lewat FormPilihSisi.
+    ///                                       Tombol N1 aktif setelah WOS valid.
     ///  4. Tekan N1 → N2 → N3 (1 tombol)   → tiap tombol membuka form input ukuran.
     ///                                       Setelah N3 + konfirmasi NG, data di-INSERT
-    ///                                       ke Tr_LhhpWH_copy dan tombol kembali ke N1.
-    ///  5. Fokus kembali ke WOS            → operator bisa scan WOS berikutnya tanpa
-    ///                                       scan ulang Lotno/Aplikator.
+    ///                                       ke TrCrimpingResult dan tombol kembali ke N1.
+    ///  5. Fokus kembali ke WOS            → operator bisa scan WOS berikutnya TANPA
+    ///                                       scan ulang Lotno/Aplikator, karena
+    ///                                       ResetAfterSubmit() mempertahankan
+    ///                                       tiproductname dan hanya menghapus
+    ///                                       patokan + hasil N1/N2/N3.
     ///
     /// ================================================================
     ///  STRUKTUR LAYOUT (BuildContent)
@@ -47,15 +56,23 @@ namespace ProjectCrimping
     /// ================================================================
     ///  CATATAN PENTING UNTUK MAINTAINER
     /// ================================================================
-    ///  - "Patokan" = nilai standar CH/IH/CW/IW/Tension dari TrRPHMesin.
-    ///    Patokan hanya dihapus saat Lotno/Terminal di-reset, TIDAK saat
-    ///    erase Aplikator/WOS atau setelah simpan data (lihat ResetNState
-    ///    vs ResetNStateOnly).
+    ///  - "Patokan" = nilai standar CH/IH/CW/IW/Tension dari TrRPHMesin,
+    ///    diambil SETELAH WOS di-scan (karena butuh kolom barcode).
+    ///  - Ada DUA jenis reset, jangan ketukar:
+    ///        * ResetNState()       → hapus SEMUA, termasuk Tiproductname.
+    ///                                 Dipakai saat Lotno/Terminal di-reset,
+    ///                                 operator WAJIB scan Lotno ulang.
+    ///        * ResetAfterSubmit()  → hapus hasil N + patokan + sisi,
+    ///                                 TAPI pertahankan Tiproductname.
+    ///                                 Dipakai setelah simpan N3 sukses,
+    ///                                 erase Aplikator, dan erase WOS.
     ///  - "Hari produksi" berjalan jam 06:00 s/d 06:00 hari berikutnya
     ///    (lihat query di LoadDataCrimping).
-    ///  - Tabel yang dipakai masih Tr_LhhpWH_copy (tabel salinan). Kalau
-    ///    sudah go-live ke tabel asli, ganti nama tabel di LoadDataCrimping
-    ///    dan InsertLhhpWH.
+    ///  - Foto profil diambil dari URL:
+    ///        http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
+    ///    noreg & ext diambil dari Session (diisi di Login).
+    ///    Kalau gagal load → fallback ke AvatarCircle inisial.
+    ///  - Tabel yang dipakai masih TrCrimpingResult (tabel salinan).
     ///  - Warna & font bersumber dari AppThemeLogin supaya konsisten
     ///    dengan halaman Login.
     /// </summary>
@@ -63,12 +80,10 @@ namespace ProjectCrimping
     {
         // ================================================================
         //  PALET WARNA
-        //  Sebagian besar diambil dari AppThemeLogin agar seragam dengan Login.
-        //  Ubah warna global di AppThemeLogin, bukan di sini.
         // ================================================================
         private static readonly Color Navy = AppThemeLogin.ColorNavy;
         private static readonly Color Accent = AppThemeLogin.ColorAccent;
-        private static readonly Color AccentSoft = Color.FromArgb(253, 243, 235);   // oranye sangat muda (latar tombol erase / baris terpilih)
+        private static readonly Color AccentSoft = Color.FromArgb(253, 243, 235);
         private static readonly Color AccentLine = AppThemeLogin.ColorAccentDisabled;
         private static readonly Color TextDark = AppThemeLogin.ColorTextDark;
         private static readonly Color TextSub = AppThemeLogin.ColorTextSub;
@@ -76,28 +91,31 @@ namespace ProjectCrimping
         private static readonly Color FieldBorder = AppThemeLogin.ColorFieldBorder;
         private static readonly Color FieldIcon = AppThemeLogin.ColorFieldIcon;
         private static readonly Color ErrorColor = AppThemeLogin.ColorError;
-        private static readonly Color SuccessColor = Color.FromArgb(46, 204, 113);  // hijau: kedip border saat input valid
+        private static readonly Color SuccessColor = Color.FromArgb(46, 204, 113);
         private static readonly Color PageBg = Color.White;
 
-        // Warna field yang sedang TERKUNCI (ReadOnly)
         private static readonly Color FieldLockedBg = Color.FromArgb(238, 240, 243);
 
-        // Warna tombol N saat TERKUNCI (belum boleh ditekan)
         private static readonly Color NLockedBg = Color.FromArgb(237, 239, 242);
         private static readonly Color NLockedBorder = Color.FromArgb(221, 225, 230);
         private static readonly Color NLockedText = Color.FromArgb(168, 176, 186);
 
         // ================================================================
-        //  GLYPH IKON (font Segoe MDL2 Assets)
-        //  Kode unicode ikon. Kalau ikon tidak muncul, cek font tersedia
-        //  atau gunakan fallback di AppThemeLogin.ApplyIcon.
+        //  KONSTANTA: URL FOTO PROFIL
+        //  Format: <base>{noreg}.{ext}
+        // ================================================================
+        private const string AvatarBaseUrl =
+            "http://122.144.4.194:31985/indoprima_gemilang/public/img/";
+
+        // ================================================================
+        //  GLYPH IKON
         // ================================================================
         private const string IcAdd = "\uE710";
         private const string IcClock = "\uE121";
         private const string IcExport = "\uE8A5";
         private const string IcPower = "\uE7E8";
-        private const string IcErase = "\uE75C";      // ikon penghapus (erase field)
-        private const string IcClose = "\uE711";      // ikon X (reset semua, di bar Lotno)
+        private const string IcErase = "\uE75C";
+        private const string IcClose = "\uE711";
         private const string IcTerminal = "\uE7F4";
         private const string IcTag = "\uE8EC";
         private const string IcSearch = "\uE721";
@@ -106,41 +124,22 @@ namespace ProjectCrimping
         //  KONTROL UI
         // ================================================================
         private TextBox txtLotno, txtTerminal, txtAplikator, txtWos;
-
-        /// <summary>
-        /// Satu tombol dinamis untuk N1 → N2 → N3.
-        /// Label & aksinya ditentukan oleh <see cref="_nStep"/>.
-        /// Status aktif/terkunci disimpan di properti Tag ("ready" / "locked").
-        /// </summary>
         private RoundedButton btnN;
-
-        /// <summary>Langkah pengukuran saat ini: 1 = N1, 2 = N2, 3 = N3.</summary>
         private int _nStep = 1;
+        private DataGridView dgv;
 
-        private DataGridView dgv;   // tabel riwayat
-
-        // Panel pembungkus tiap field (untuk border/warna) & tombol erase-nya.
-        // Disimpan sebagai field class karena dipakai lintas event handler.
         private RoundedPanel fieldLotno, fieldTerminal, fieldAplikator, fieldWos;
         private RoundedButton eraseLotno, eraseTerminal, eraseAplikator, eraseWos;
+
+        /// <summary>Foto profil operator dari URL. Menutupi AvatarCircle kalau berhasil load.</summary>
+        private AvatarPicture _avatarPic;
 
         // ================================================================
         //  STATE & DEPENDENCY
         // ================================================================
-
-        /// <summary>Menampung hasil input N1/N2/N3 dan patokan selama satu siklus WOS.</summary>
         private CrimpingState _state = new CrimpingState();
-
-        /// <summary>Helper koneksi database (SQL Server).</summary>
         private readonly DatabaseHelper _db = new DatabaseHelper(DbProvider.SqlServer);
-
-        /// <summary>Referensi ke form Login, dipakai untuk kembali ke Login saat logout.</summary>
         private readonly Login _login;
-
-        /// <summary>
-        /// True kalau form ditutup karena LOGOUT.
-        /// Kalau false (user menutup jendela), seluruh aplikasi ikut keluar (lihat OnFormClosed).
-        /// </summary>
         private bool _isLoggingOut;
 
         public Dashboard(Login login)
@@ -148,17 +147,21 @@ namespace ProjectCrimping
             _login = login;
             InitializeComponent();
 
-            // Cegah jendela dikecilkan sampai layout rusak.
             MinimumSize = new Size(1100, 700);
-
             DoubleBuffered = true;
             BuildUI();
+
+            // Load foto profil secara async SETELAH form ditampilkan.
+            // Kalau gagal, AvatarCircle (inisial) tetap tampil.
+            //Shown += async (s, e) => await LoadAvatarAsync();
         }
 
-        /// <summary>
-        /// Flag WS_EX_COMPOSITED (0x02000000): semua child control digambar
-        /// double-buffered untuk mengurangi flicker saat resize.
-        /// </summary>
+        protected override async void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            await LoadAvatarAsync();
+        }
+
         protected override CreateParams CreateParams
         {
             get
@@ -169,10 +172,6 @@ namespace ProjectCrimping
             }
         }
 
-        /// <summary>
-        /// Tutup Dashboard = keluar aplikasi, KECUALI kalau karena logout
-        /// (dalam kasus itu Login ditampilkan kembali lewat login.ShowAgain()).
-        /// </summary>
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             base.OnFormClosed(e);
@@ -180,108 +179,104 @@ namespace ProjectCrimping
                 Application.Exit();
         }
 
-        /// <summary>
-        /// Merakit seluruh UI. Urutan Controls.Add penting karena Dock:
-        /// konten (Fill) ditambahkan dulu, baru sidebar (Left).
-        /// </summary>
         private void BuildUI()
         {
             SuspendLayout();
             Controls.Add(BuildContent());
             Controls.Add(BuildSidebar());
-            ActiveControl = txtLotno;   // fokus awal ke Lotno (siap scan)
+            ActiveControl = txtLotno;
             ResumeLayout(true);
         }
 
         // =====================================================
         //  INNER CLASS: CrimpingState
-        //  Penampung data sementara satu siklus input.
-        //  Semua nullable: null = belum diisi (dikirim sebagai DBNull saat INSERT).
         // =====================================================
         private class CrimpingState
         {
-            // ---- Hasil ukur N1 (+ Tension, hanya diukur di N1) ----
             public decimal? N1_CH { get; set; }
             public decimal? N1_IH { get; set; }
             public decimal? N1_CW { get; set; }
             public decimal? N1_IW { get; set; }
             public decimal? N1_Tension { get; set; }
 
-            // ---- Hasil ukur N2 ----
             public decimal? N2_CH { get; set; }
             public decimal? N2_IH { get; set; }
             public decimal? N2_CW { get; set; }
             public decimal? N2_IW { get; set; }
 
-            // ---- Hasil ukur N3 (+ jumlah NG) ----
             public decimal? N3_CH { get; set; }
             public decimal? N3_IH { get; set; }
             public decimal? N3_CW { get; set; }
             public decimal? N3_IW { get; set; }
             public int? N3_NG { get; set; }
 
-            // ---- PATOKAN (standar) dari TrRPHMesin, dipakai form N1/N2/N3
-            //      sebagai pembanding batas ukuran ----
             public string Tiproductname { get; set; }
-            public string SisiTerminal { get; set; }      // "A" atau "B"
+            public string SisiTerminal { get; set; }
             public decimal? PatokanCH { get; set; }
             public decimal? PatokanIH { get; set; }
             public decimal? PatokanCW { get; set; }
             public decimal? PatokanIW { get; set; }
             public decimal? PatokanTension { get; set; }
 
-            public void ClearN1()
-            {
-                N1_CH = null; N1_IH = null; N1_CW = null; N1_IW = null; N1_Tension = null;
-            }
-            public void ClearN2()
-            {
-                N2_CH = null; N2_IH = null; N2_CW = null; N2_IW = null;
-            }
-            public void ClearN3()
-            {
-                N3_CH = null; N3_IH = null; N3_CW = null; N3_IW = null; N3_NG = null;
-            }
+            public void ClearN1() { N1_CH = null; N1_IH = null; N1_CW = null; N1_IW = null; N1_Tension = null; }
+            public void ClearN2() { N2_CH = null; N2_IH = null; N2_CW = null; N2_IW = null; }
+            public void ClearN3() { N3_CH = null; N3_IH = null; N3_CW = null; N3_IW = null; N3_NG = null; }
             public void ClearPatokan()
             {
                 Tiproductname = null;
                 SisiTerminal = null;
-                PatokanCH = null;
-                PatokanIH = null;
-                PatokanCW = null;
-                PatokanIW = null;
-                PatokanTension = null;
+                PatokanCH = null; PatokanIH = null; PatokanCW = null; PatokanIW = null; PatokanTension = null;
             }
 
-            /// <summary>Hapus semua: hasil N1-N3 DAN patokan.</summary>
-            public void ClearAll()
+            /// <summary>
+            /// Hapus patokan + sisi terminal saja.
+            /// Tiproductname SENGAJA tidak dihapus — dipakai ResetAfterSubmit()
+            /// supaya operator bisa langsung scan WOS berikutnya.
+            /// </summary>
+            public void ClearPatokanOnly()
             {
-                ClearN1(); ClearN2(); ClearN3();
-                ClearPatokan();
+                SisiTerminal = null;
+                PatokanCH = null; PatokanIH = null; PatokanCW = null; PatokanIW = null; PatokanTension = null;
             }
+
+            public void ClearAll() { ClearN1(); ClearN2(); ClearN3(); ClearPatokan(); }
         }
 
         // =====================================================
-        //  SIDEBAR (kiri)
-        //  Isi: profil operator, accordion Shift & Mesin,
-        //  menu (Request Terminal, Downtime, Export), tombol Logout.
+        //  SIDEBAR
         // =====================================================
         private Control BuildSidebar()
         {
             var side = new SidebarPanel { Dock = DockStyle.Left, Width = 270 };
 
-            // ---- Profil: avatar, nama, noreg ----
             var profile = new TransparentPanel { Dock = DockStyle.Top, Height = 215 };
+
+            // ---- AvatarCircle: fallback inisial (kalau foto gagal load) ----
+            string initials = GetInitials(Session.Nama);
 
             var avatar = new AvatarCircle
             {
-                Initials = "DA",   // TODO: bisa diganti inisial dari Session.Nama
+                Initials = initials,
                 Font = new Font("Segoe UI", 20f, FontStyle.Bold),
                 Size = new Size(92, 92),
-                Location = new Point((270 - 92) / 2, 30),   // dipusatkan di lebar sidebar (270)
+                Location = new Point((270 - 92) / 2, 30),
                 FillColor = Navy,
                 RingColor = Accent,
                 InitialsColor = Accent
+            };
+
+            // ---- PictureBox di atas AvatarCircle: foto dari URL ----
+            //  Awalnya Visible=false. LoadAvatarAsync() akan menampilkan
+            //  kalau download gambar berhasil.
+            _avatarPic = new AvatarPicture
+            {
+                Size = new Size(92, 92),
+                Location = new Point((270 - 92) / 2, 30),
+                RingColor = Accent,
+                RingThickness = 3,
+                FillColor = Navy,
+                BackColor = Color.Transparent,
+                Visible = false
             };
 
             var lblName = new Label
@@ -296,7 +291,6 @@ namespace ProjectCrimping
                 BackColor = Color.Transparent
             };
 
-            // "Pill" berisi nomor registrasi operator
             var pill = new RoundedPanel
             {
                 Radius = 14,
@@ -315,11 +309,13 @@ namespace ProjectCrimping
                 BackColor = Color.Transparent
             });
 
+            // Urutan Add: avatar dulu, baru _avatarPic di atasnya.
+            // _avatarPic.Visible = false sampai foto berhasil didownload.
             profile.Controls.Add(avatar);
+            profile.Controls.Add(_avatarPic);
             profile.Controls.Add(lblName);
             profile.Controls.Add(pill);
 
-            // ---- Tombol LOGOUT (menempel di bawah) ----
             var bottom = new TransparentPanel { Dock = DockStyle.Bottom, Height = 84, Padding = new Padding(16, 10, 16, 16) };
             var btnLogout = MenuButton(IcPower, "LOGOUT");
             btnLogout.FillColor = Color.FromArgb(40, ErrorColor);
@@ -330,22 +326,20 @@ namespace ProjectCrimping
             btnLogout.Margin = Padding.Empty;
             btnLogout.Click += (s, e) =>
             {
-                // Minta konfirmasi dulu
                 using (var f = new FormConfirmLogout())
                 {
                     if (f.ShowDialog(this) != DialogResult.OK) return;
                 }
 
                 Session.Clear();
-                _isLoggingOut = true;   // supaya OnFormClosed TIDAK menutup aplikasi
+                _isLoggingOut = true;
 
                 var login = _login;
-                Close();                // tutup Dashboard
-                login.ShowAgain();      // tampilkan Login lagi (reset form di dalamnya)
+                Close();
+                login.ShowAgain();
             };
             bottom.Controls.Add(btnLogout);
 
-            // ---- Menu tengah ----
             var menu = new TransparentPanel { Dock = DockStyle.Fill, Padding = new Padding(0, 6, 0, 0) };
 
             var items = new List<RoundedButton>
@@ -358,8 +352,6 @@ namespace ProjectCrimping
             items[1].Click += (s, e) => { using (var f = new FormMaintenanceCall()) f.ShowDialog(this); };
             items[2].Click += (s, e) => ExportPdf();
 
-            // Loop MUNDUR karena DockStyle.Top: control yang ditambah terakhir
-            // tampil paling atas. Mundur menjaga urutan visual = urutan list.
             for (int i = items.Count - 1; i >= 0; i--)
             {
                 var b = items[i];
@@ -375,19 +367,16 @@ namespace ProjectCrimping
                 menu.Controls.Add(wrap);
             }
 
-            // ---- Accordion info Shift & Mesin (default tertutup) ----
             var acc = new InfoAccordion { Title = "SHIFT & MESIN", Dock = DockStyle.Top };
             acc.AddItem(IcClock, "SHIFT", Session.ShiftDisplay ?? "-");
             acc.AddItem(AppThemeLogin.IconGear, "MESIN", Session.MesinDisplay ?? "-");
             acc.SetExpanded(false);
 
-            // Pembungkus: tingginya mengikuti accordion saat dibuka/ditutup
             var accWrap = new TransparentPanel { Dock = DockStyle.Top, Padding = new Padding(16, 6, 16, 12) };
             accWrap.Height = acc.Height + accWrap.Padding.Vertical;
             acc.SizeChanged += (s, e) => accWrap.Height = acc.Height + accWrap.Padding.Vertical;
             accWrap.Controls.Add(acc);
 
-            // Urutan Add menentukan susunan Dock (Fill dulu, Top terakhir = paling atas)
             side.Controls.Add(menu);
             side.Controls.Add(bottom);
             side.Controls.Add(accWrap);
@@ -395,7 +384,6 @@ namespace ProjectCrimping
             return side;
         }
 
-        /// <summary>Pabrik tombol menu sidebar (gaya transparan di atas latar navy).</summary>
         private RoundedButton MenuButton(string icon, string text)
         {
             return new RoundedButton
@@ -414,9 +402,233 @@ namespace ProjectCrimping
         }
 
         // =====================================================
+        //  HELPER: inisial dari nama
+        // =====================================================
+        /// <summary>
+        /// Ambil inisial dari nama, max 2 karakter.
+        /// Contoh: "Dedi Ahmad" → "DA", "Budi" → "BU", null → "?".
+        /// </summary>
+        private static string GetInitials(string nama)
+        {
+            if (string.IsNullOrWhiteSpace(nama)) return "?";
+
+            var parts = nama.Trim()
+                            .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length == 0) return "?";
+            if (parts.Length == 1)
+            {
+                string p = parts[0];
+                return p.Length >= 2
+                    ? p.Substring(0, 2).ToUpperInvariant()
+                    : p.ToUpperInvariant();
+            }
+
+            return (parts[0][0].ToString() + parts[parts.Length - 1][0].ToString())
+                .ToUpperInvariant();
+        }
+
+        // =====================================================
+        //  LOAD FOTO PROFIL DARI URL
+        //
+        //  URL: http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
+        //  Kalau gagal (noreg/ext kosong, file tidak ada, server down),
+        //  _avatarPic dibiarkan Visible=false → AvatarCircle inisial tampil.
+        //
+        //  Dipanggil sekali di event Shown (lihat constructor).
+        // =====================================================
+        private async Task LoadAvatarAsync()
+        {
+            // ============================================================
+            //  LOGGING HELPER (lokal) — biar konsisten formatnya
+            // ============================================================
+            void Log(string msg)
+            {
+                string line = $"[AVATAR {DateTime.Now:HH:mm:ss.fff}] {msg}";
+                System.Diagnostics.Debug.WriteLine(line);
+                System.Diagnostics.Trace.WriteLine(line);
+                Console.WriteLine(line);
+            }
+
+            Log("===== MULAI LoadAvatarAsync =====");
+
+            if (_avatarPic == null)
+            {
+                Log("STOP: _avatarPic == null (BuildSidebar belum jalan?)");
+                return;
+            }
+
+            string noreg = Session.Noreg;
+            string ext = Session.ext;
+
+            Log($"Session.Noreg = '{noreg ?? "(null)"}'");
+            Log($"Session.ext   = '{ext ?? "(null)"}'");
+
+            // ext di-normalisasi: buang titik di depan kalau ada.
+            if (!string.IsNullOrWhiteSpace(ext))
+                ext = ext.TrimStart('.').Trim();
+
+            Log($"ext (setelah normalisasi) = '{ext ?? "(null)"}'");
+
+            if (string.IsNullOrWhiteSpace(noreg))
+            {
+                Log("STOP: noreg kosong → fallback inisial");
+                _avatarPic.Visible = false;
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(ext))
+            {
+                Log("STOP: ext kosong → fallback inisial");
+                _avatarPic.Visible = false;
+                return;
+            }
+
+            string url = AvatarBaseUrl + Uri.EscapeDataString(noreg) + "." + ext;
+            Log($"URL final = {url}");
+
+            try
+            {
+                byte[] data;
+
+                using (var wc = new WebClient())
+                {
+                    Log("Mulai download...");
+
+                    var downloadTask = wc.DownloadDataTaskAsync(url);
+                    var timeoutTask = Task.Delay(5000);
+
+                    var completed = await Task.WhenAny(downloadTask, timeoutTask);
+
+                    if (completed == timeoutTask)
+                    {
+                        Log("TIMEOUT: download > 5 detik → fallback inisial");
+                        _avatarPic.Visible = false;
+                        return;
+                    }
+
+                    // Kalau download selesai, tapi status-nya faulted/exception,
+                    // kita tangkap di sini sebelum await.
+                    if (downloadTask.IsFaulted)
+                    {
+                        Log($"DOWNLOAD FAULTED. Exception:");
+                        if (downloadTask.Exception != null)
+                        {
+                            foreach (var ex in downloadTask.Exception.Flatten().InnerExceptions)
+                            {
+                                Log($"   → {ex.GetType().Name}: {ex.Message}");
+                            }
+                        }
+                    }
+
+                    data = await downloadTask;
+
+                    Log($"Download SELESAI. Panjang byte = {(data?.Length ?? 0)}");
+                }
+
+                if (data == null || data.Length == 0)
+                {
+                    Log("STOP: data null atau kosong → fallback inisial");
+                    _avatarPic.Visible = false;
+                    return;
+                }
+
+                // Cek magic byte: apakah benar-benar JPEG/PNG?
+                // JPEG: FF D8 FF ...
+                // PNG : 89 50 4E 47 ...
+                // HTML (kemungkinan error page): 3C 21 ... atau 3C 68 ...
+                string magic = BitConverter.ToString(data, 0, Math.Min(8, data.Length));
+                Log($"Magic bytes (8 pertama) = {magic}");
+
+                bool isJpeg = data.Length >= 3 &&
+                              data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+                bool isPng = data.Length >= 4 &&
+                             data[0] == 0x89 && data[1] == 0x50 &&
+                             data[2] == 0x4E && data[3] == 0x47;
+
+                if (!isJpeg && !isPng)
+                {
+                    Log("WARNING: byte bukan JPEG/PNG. Kemungkinan server balikin HTML error.");
+
+                    // Coba intip 200 karakter pertama (kalau HTML, bakal keliatan)
+                    int previewLen = Math.Min(200, data.Length);
+                    string preview = System.Text.Encoding.UTF8.GetString(data, 0, previewLen);
+                    Log($"Preview 200 char pertama:\n{preview}");
+                }
+
+                Log("Mulai Image.FromStream...");
+
+                Image img;
+                using (var ms = new System.IO.MemoryStream(data))
+                {
+                    using (var raw = Image.FromStream(ms))
+                    {
+                        img = new Bitmap(raw);
+                        Log($"Image.FromStream OK. Ukuran asli = {raw.Width} x {raw.Height}");
+                    }
+                }
+
+                Log("Bitmap copy OK. Set ke _avatarPic...");
+
+                if (InvokeRequired)
+                {
+                    Log("InvokeRequired = true → Invoke ke UI thread");
+                    Invoke(new Action(() =>
+                    {
+                        _avatarPic.Image = img;
+                        _avatarPic.Visible = true;
+                        _avatarPic.BringToFront();
+                        _avatarPic.Invalidate();
+                        Log("Foto ter-set + Visible=true + BringToFront");
+                    }));
+                }
+                else
+                {
+                    Log("InvokeRequired = false → langsung set dari thread ini");
+                    _avatarPic.Image = img;
+                    _avatarPic.Visible = true;
+                    _avatarPic.BringToFront();
+                    _avatarPic.Invalidate();
+                    Log("Foto ter-set + Visible=true + BringToFront");
+                }
+
+                Log($"===== SUKSES: {url} =====");
+            }
+            catch (WebException wex)
+            {
+                Log("===== WebException =====");
+                Log($"Status      = {wex.Status}");
+                Log($"Message     = {wex.Message}");
+
+                if (wex.Response is System.Net.HttpWebResponse resp)
+                {
+                    Log($"HTTP Status = {(int)resp.StatusCode} {resp.StatusCode}");
+                }
+
+                if (_avatarPic != null)
+                    _avatarPic.Visible = false;
+            }
+            catch (Exception ex)
+            {
+                Log("===== Exception umum =====");
+                Log($"Tipe    = {ex.GetType().FullName}");
+                Log($"Message = {ex.Message}");
+                Log($"Stack   =\n{ex.StackTrace}");
+
+                if (ex.InnerException != null)
+                {
+                    Log($"Inner Exception = {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
+                }
+
+                if (_avatarPic != null)
+                    _avatarPic.Visible = false;
+            }
+
+            Log("===== SELESAI LoadAvatarAsync =====");
+        }
+
+        // =====================================================
         //  KONTEN UTAMA
-        //  TableLayoutPanel 5 baris. Ubah tinggi baris di sini kalau
-        //  ingin mengatur ruang tabel (makin kecil baris atas → tabel makin besar).
         // =====================================================
         private Control BuildContent()
         {
@@ -429,11 +641,11 @@ namespace ProjectCrimping
                 RowCount = 5
             };
             main.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));          // 0: header
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));      // 1: bar lotno
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));     // 2: kotak input (3 baris)
-            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));      // 3: tombol N
-            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));      // 4: tabel (sisa ruang)
+            main.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 180));
+            main.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+            main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             main.Controls.Add(BuildHeader(), 0, 0);
             main.Controls.Add(BuildLotnoBar(), 0, 1);
@@ -443,7 +655,6 @@ namespace ProjectCrimping
             return main;
         }
 
-        /// <summary>Judul halaman + subjudul + garis aksen oranye.</summary>
         private Control BuildHeader()
         {
             var flow = new FlowLayoutPanel
@@ -484,18 +695,7 @@ namespace ProjectCrimping
         }
 
         // =====================================================
-        //  BAR LOTNO (di luar kotak input)
-        //
-        //  Kolom: [Label 90px] [Field 340px] [Tombol X 52px] [sisa kosong]
-        //
-        //  Alur Enter di Lotno:
-        //    1. Cari tiproductname dari inventory (GetTiproductnameByLotno)
-        //    2. Cari patokan Terminal A/B (CheckTerminal)
-        //    3. Kalau hasil > 1 (terminal ada di sisi A & B) → operator pilih sisi
-        //    4. Simpan patokan ke _state, kunci Lotno & Terminal,
-        //       buka kunci Aplikator, fokus ke Aplikator.
-        //
-        //  Tombol X = RESET SEMUA (Lotno, Terminal, Aplikator, WOS, tabel, state N).
+        //  BAR LOTNO
         // =====================================================
         private Control BuildLotnoBar()
         {
@@ -507,10 +707,10 @@ namespace ProjectCrimping
                 RowCount = 1,
                 Margin = new Padding(0, 0, 0, 12)
             };
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));    // label
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));   // field (lebar tetap)
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));    // tombol X
-            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));    // ruang kosong
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
+            bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             bar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             bar.Controls.Add(new Label
@@ -523,7 +723,6 @@ namespace ProjectCrimping
                 BackColor = Color.Transparent
             }, 0, 0);
 
-            // Panel berborder membungkus TextBox (TextBox native tidak punya sudut rounded)
             fieldLotno = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
@@ -552,8 +751,6 @@ namespace ProjectCrimping
             fieldLotno.Controls.Add(inner);
             fieldLotno.Controls.Add(icon);
 
-            // Border oranye saat field fokus, kembali netral saat blur
-            // (hanya kalau field tidak sedang terkunci/ReadOnly)
             txtLotno.Enter += (s, e) =>
             {
                 fieldLotno.Focused = true;
@@ -569,7 +766,6 @@ namespace ProjectCrimping
 
             bar.Controls.Add(fieldLotno, 1, 0);
 
-            // ===== Tombol X: reset semua =====
             eraseLotno = new RoundedButton
             {
                 Dock = DockStyle.Fill,
@@ -582,11 +778,11 @@ namespace ProjectCrimping
             };
             bar.Controls.Add(eraseLotno, 2, 0);
 
-            // ===== ENTER di Lotno (scanner barcode biasanya mengirim Enter di akhir) =====
+            // ===== ENTER di Lotno =====
             txtLotno.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
-                e.SuppressKeyPress = true;   // cegah bunyi "ding" Windows
+                e.SuppressKeyPress = true;
 
                 string lotno = txtLotno.Text.Trim();
                 if (string.IsNullOrEmpty(lotno))
@@ -595,7 +791,6 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // Langkah 1: Lotno → nama produk terminal (tiproductname)
                 string tiproductname = GetTiproductnameByLotno(lotno);
                 if (string.IsNullOrEmpty(tiproductname))
                 {
@@ -605,64 +800,19 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // Langkah 2: nama produk → patokan di Terminal A / B
-                var results = CheckTerminal(tiproductname);
-                if (results.Count == 0)
-                {
-                    NotifPopup.Warning(this, "Terminal Tidak Ditemukan",
-                        $"tiproductname '{tiproductname}' tidak terdaftar di Terminal A/B.\n" +
-                        "Tidak bisa lanjut.");
-                    txtLotno.Focus();
-                    return;
-                }
-
-                // Lotno valid: tampilkan di field Terminal dan kunci keduanya
                 _state.Tiproductname = tiproductname;
                 txtTerminal.Text = tiproductname;
+
                 LockField(fieldLotno, txtLotno, eraseLotno, true);
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
 
-                // Langkah 3: tentukan sisi (A/B)
-                TerminalResult selected = null;
-                if (results.Count > 1)
-                {
-                    // Terminal ada di lebih dari satu sisi/baris → operator memilih
-                    using (var f = new FormPilihSisi(results))
-                    {
-                        if (f.ShowDialog(this) != DialogResult.OK)
-                        {
-                            // Dibatalkan: kembalikan ke kondisi awal Lotno
-                            txtTerminal.Clear();
-                            txtLotno.Clear();
-                            _state.ClearPatokan();
-                            LockField(fieldLotno, txtLotno, eraseLotno, false);
-                            LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
-                            txtLotno.Focus();
-                            return;
-                        }
-                        selected = f.SelectedResult;
-                    }
-                }
-                else
-                {
-                    selected = results[0];
-                }
-
-                // Langkah 4: simpan patokan untuk dipakai form N1/N2/N3
-                _state.SisiTerminal = selected.Sisi;
-                _state.PatokanCH = selected.CH;
-                _state.PatokanIH = selected.IH;
-                _state.PatokanCW = selected.CW;
-                _state.PatokanIW = selected.IW;
-                _state.PatokanTension = selected.Tension;
-
                 FlashSuccess(fieldLotno);
-                // Lanjut ke Aplikator
+
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, false);
                 txtAplikator.Focus();
             };
 
-            // ===== X: reset Lotno + Terminal + Aplikator + WOS + tabel + state N =====
+            // ===== X: reset SEMUA =====
             eraseLotno.Click += (s, e) =>
             {
                 txtLotno.Clear();
@@ -670,14 +820,13 @@ namespace ProjectCrimping
                 txtAplikator.Clear();
                 txtWos.Clear();
 
-                // Lotno terbuka; sisanya terkunci sampai Lotno discan lagi
                 LockField(fieldLotno, txtLotno, eraseLotno, false);
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
                 LockField(fieldWos, txtWos, eraseWos, true);
 
                 ResetBorder(fieldLotno, fieldTerminal, fieldAplikator, fieldWos);
-                ResetNState();   // TOTAL: patokan ikut terhapus
+                ResetNState();
                 ClearTable();
 
                 txtLotno.Focus();
@@ -688,12 +837,6 @@ namespace ProjectCrimping
 
         // =====================================================
         //  KOTAK INPUT: TERMINAL, APLIKATOR, WOS
-        //
-        //  Status kunci tiap field (ReadOnly) mengatur urutan scan:
-        //    Terminal  : selalu terkunci (diisi otomatis dari Lotno)
-        //    Aplikator : terbuka setelah Lotno valid
-        //    WOS       : terbuka setelah Aplikator valid
-        //  Tombol N1 aktif setelah WOS valid.
         // =====================================================
         private Control BuildInputCard()
         {
@@ -707,7 +850,6 @@ namespace ProjectCrimping
                 BorderColor = FieldBorder
             };
 
-            // Grid: [label 120] [field fleksibel] [tombol erase 58] x 3 baris sama tinggi
             var grid = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -720,7 +862,6 @@ namespace ProjectCrimping
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58));
             for (int i = 0; i < 3; i++) grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.33f));
 
-            // Buat 3 field. out-parameter mengisi field class (txtX, fieldX, eraseX).
             AddField(grid, 0, "TERMINAL", IcTerminal, "🖥",
                      out txtTerminal, out fieldTerminal, out eraseTerminal);
             AddField(grid, 1, "APLIKATOR", AppThemeLogin.IconGear, AppThemeLogin.FallbackGear,
@@ -728,12 +869,11 @@ namespace ProjectCrimping
             AddField(grid, 2, "WOS", IcTag, "🏷",
                      out txtWos, out fieldWos, out eraseWos);
 
-            // Kondisi awal: semua terkunci sampai Lotno discan
             LockField(fieldTerminal, txtTerminal, eraseTerminal, true);
             LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
             LockField(fieldWos, txtWos, eraseWos, true);
 
-            // ===== ENTER di Aplikator → cek ke MSAplikator =====
+            // ===== ENTER di Aplikator =====
             txtAplikator.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
@@ -744,7 +884,6 @@ namespace ProjectCrimping
 
                 if (!CheckAplikator(kodeAplikator))
                 {
-                    // Tidak terdaftar: border merah, tetap di field ini
                     fieldAplikator.BorderColor = ErrorColor;
                     fieldAplikator.Invalidate();
 
@@ -756,22 +895,19 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // Valid: kunci Aplikator, buka WOS
                 FlashSuccess(fieldAplikator);
 
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
                 LockField(fieldWos, txtWos, eraseWos, false);
                 txtWos.Focus();
 
-                // Muat riwayat hari ini untuk kombinasi terminal + aplikator + operator ini
                 LoadDataCrimping(
                     txtTerminal.Text.Trim(),
                     kodeAplikator,
                     Session.Noreg);
             };
 
-            // ===== ENTER di WOS → validasi format & skema =====
-            // Format WOS: <lotno>.<skema 3 digit>, contoh BEJ81212112.001
+            // ===== ENTER di WOS =====
             txtWos.KeyDown += (s, e) =>
             {
                 if (e.KeyCode != Keys.Enter) return;
@@ -780,27 +916,16 @@ namespace ProjectCrimping
 
                 string wosInput = txtWos.Text.Trim();
 
-                // Validasi 1: harus ada titik pemisah
-                if (!wosInput.Contains("."))
+                // Validasi format WOS: harus ada titik + skema angka setelahnya
+                bool formatValid = wosInput.Contains(".") && TryParseSkema(wosInput, out _);
+
+                if (!formatValid)
                 {
                     fieldWos.BorderColor = ErrorColor;
                     fieldWos.Invalidate();
 
-                    NotifPopup.Warning(this, "Format WOS Salah",
-                        "WOS harus mengandung titik (contoh: BEJ81212112.001).");
-
-                    txtWos.Focus();
-                    return;
-                }
-
-                // Validasi 2: skema setelah titik = tepat 3 digit angka
-                if (!TryParseSkema(wosInput, out _))
-                {
-                    fieldWos.BorderColor = ErrorColor;
-                    fieldWos.Invalidate();
-
-                    NotifPopup.Warning(this, "Format Skema Salah",
-                        "Skema setelah titik harus 3 digit angka.\n" +
+                    NotifPopup.Warning(this, "Format WOS Tidak Sesuai",
+                        "Format WOS tidak sesuai.\n\n" +
                         "Contoh: BEJ81212112.001");
 
                     txtWos.Focus();
@@ -808,23 +933,83 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // Validasi 3: patokan harus sudah ada (Lotno sudah di-scan)
-                if (string.IsNullOrEmpty(_state.SisiTerminal))
+                if (string.IsNullOrEmpty(_state.Tiproductname))
                 {
-                    NotifPopup.Warning(this, "Sisi Terminal Belum Ditentukan",
-                        "Scan Lotno dulu untuk menentukan Terminal A/B.");
+                    NotifPopup.Warning(this, "Lotno Belum Discan",
+                        "Scan Lotno dulu sebelum WOS.");
                     txtWos.Focus();
                     return;
                 }
 
-                // Semua valid: kunci WOS dan aktifkan tombol N1
+                var results = CheckTerminal(_state.Tiproductname, wosInput);
+
+                if (results.Count == 0)
+                {
+                    fieldWos.BorderColor = ErrorColor;
+                    fieldWos.Invalidate();
+
+                    NotifPopup.Warning(this, "WOS Tidak Cocok",
+                        $"WOS '{wosInput}' tidak ditemukan di TrRPHMesin (kolom barcode)\n" +
+                        $"untuk terminal '{_state.Tiproductname}'.\n\n" +
+                        "Tidak bisa lanjut.");
+
+                    txtWos.Focus();
+                    txtWos.SelectAll();
+                    return;
+                }
+
+                TerminalResult selected = null;
+                if (results.Count > 1)
+                {
+                    using (var f = new FormPilihSisi(results))
+                    {
+                        if (f.ShowDialog(this) != DialogResult.OK)
+                        {
+                            txtWos.Focus();
+                            txtWos.SelectAll();
+                            return;
+                        }
+                        selected = f.SelectedResult;
+                    }
+                }
+                else
+                {
+                    selected = results[0];
+                }
+
+                _state.SisiTerminal = selected.Sisi;
+                _state.PatokanCH = selected.CH;
+                _state.PatokanIH = selected.IH;
+                _state.PatokanCW = selected.CW;
+                _state.PatokanIW = selected.IW;
+                _state.PatokanTension = selected.Tension;
+
+                if (IsWosDuplicate(
+                        wosInput,
+                        txtTerminal.Text.Trim(),
+                        txtAplikator.Text.Trim(),
+                        Session.Noreg))
+                {
+                    fieldWos.BorderColor = ErrorColor;
+                    fieldWos.Invalidate();
+
+                    NotifPopup.Warning(this, "WOS Duplikat",
+                        $"WOS '{wosInput}' sudah pernah diinput hari ini untuk\n" +
+                        $"terminal + aplikator + operator yang sama.\n\n" +
+                        "Silakan scan WOS lain.");
+
+                    txtWos.Focus();
+                    txtWos.SelectAll();
+                    return;
+                }
+
                 FlashSuccess(fieldWos);
                 LockField(fieldWos, txtWos, eraseWos, true);
                 _nStep = 1;
                 SetNButtonState(NState.Ready);
             };
 
-            // ===== ERASE TERMINAL → reset Terminal, Aplikator, WOS (patokan ikut terhapus) =====
+            // ===== ERASE TERMINAL =====
             eraseTerminal.Click += (s, e) =>
             {
                 txtTerminal.Clear();
@@ -836,13 +1021,13 @@ namespace ProjectCrimping
                 LockField(fieldWos, txtWos, eraseWos, true);
 
                 ResetBorder(fieldTerminal, fieldAplikator, fieldWos);
-                ResetNState();   // TOTAL: patokan ikut hilang → harus scan Lotno lagi
+                ResetNState();
                 ClearTable();
 
                 txtLotno.Focus();
             };
 
-            // ===== ERASE APLIKATOR → reset Aplikator & WOS (patokan TETAP) =====
+            // ===== ERASE APLIKATOR =====
             eraseAplikator.Click += (s, e) =>
             {
                 txtAplikator.Clear();
@@ -851,20 +1036,20 @@ namespace ProjectCrimping
                 LockField(fieldWos, txtWos, eraseWos, true);
                 ResetBorder(fieldAplikator, fieldWos);
 
-                ResetNStateOnly();   // patokan jangan ikut terhapus
+                ResetAfterSubmit();
                 ClearTable();
 
                 txtAplikator.Focus();
             };
 
-            // ===== ERASE WOS → reset WOS saja (patokan TETAP) =====
+            // ===== ERASE WOS =====
             eraseWos.Click += (s, e) =>
             {
                 txtWos.Clear();
                 LockField(fieldWos, txtWos, eraseWos, false);
                 ResetBorder(fieldWos);
 
-                ResetNStateOnly();   // patokan jangan ikut terhapus
+                ResetAfterSubmit();
 
                 txtWos.Focus();
             };
@@ -873,16 +1058,10 @@ namespace ProjectCrimping
             return card;
         }
 
-        /// <summary>
-        /// Membuat satu baris field (label + input berborder + tombol erase)
-        /// dan menaruhnya di <paramref name="grid"/> pada baris <paramref name="row"/>.
-        /// Referensi kontrol dikembalikan lewat out-parameter.
-        /// </summary>
         private void AddField(TableLayoutPanel grid, int row, string label,
                               string glyph, string fallback,
                               out TextBox tb, out RoundedPanel field, out RoundedButton erase)
         {
-            // Kolom 0: label
             grid.Controls.Add(new Label
             {
                 Text = label,
@@ -893,7 +1072,6 @@ namespace ProjectCrimping
                 BackColor = Color.Transparent
             }, 0, row);
 
-            // Kolom 1: panel border + TextBox + ikon
             var fld = new RoundedPanel
             {
                 Dock = DockStyle.Fill,
@@ -922,7 +1100,6 @@ namespace ProjectCrimping
             fld.Controls.Add(inner);
             fld.Controls.Add(icon);
 
-            // Highlight border saat fokus (kecuali ReadOnly)
             input.Enter += (s, e) =>
             {
                 fld.Focused = true;
@@ -940,7 +1117,6 @@ namespace ProjectCrimping
             field = fld;
             grid.Controls.Add(fld, 1, row);
 
-            // Kolom 2: tombol erase
             var er = new RoundedButton
             {
                 Dock = DockStyle.Fill,
@@ -956,18 +1132,7 @@ namespace ProjectCrimping
         }
 
         // =====================================================
-        //  TOMBOL DINAMIS N1 → N2 → N3 → (kembali) N1
-        //
-        //  State machine sederhana berdasar _nStep:
-        //
-        //    _nStep=1 : buka FormN1  → simpan ke _state → _nStep=2
-        //    _nStep=2 : buka FormN2  → simpan ke _state → _nStep=3
-        //    _nStep=3 : SubmitN3()   → form N3 + konfirmasi NG + INSERT DB
-        //                              → sukses: reset ke N1 (terkunci)
-        //                              → gagal : tetap di N3 (bisa coba lagi)
-        //
-        //  Tombol hanya bereaksi jika Tag == "ready" (lihat SetNButtonState).
-        //  Kalau user menutup form dengan Cancel, _nStep TIDAK maju.
+        //  TOMBOL DINAMIS N1 → N2 → N3
         // =====================================================
         private Control BuildNButtons()
         {
@@ -985,17 +1150,15 @@ namespace ProjectCrimping
             };
 
             _nStep = 1;
-            SetNButtonState(NState.Locked);   // awal: terkunci sampai WOS valid
+            SetNButtonState(NState.Locked);
 
             btnN.Click += (s, e) =>
             {
-                // Abaikan klik kalau tombol sedang terkunci
                 if ((btnN.Tag as string) != "ready") return;
 
                 switch (_nStep)
                 {
                     case 1:
-                        // Form N1 menerima patokan (lengkap dengan Tension) untuk validasi ukuran
                         using (var f = new FormN1(
                             _state.PatokanCH,
                             _state.PatokanIH,
@@ -1012,7 +1175,7 @@ namespace ProjectCrimping
                             _state.N1_Tension = f.Tension;
                         }
                         _nStep = 2;
-                        SetNButtonState(NState.Ready);   // label berubah jadi "N2"
+                        SetNButtonState(NState.Ready);
                         break;
 
                     case 2:
@@ -1030,11 +1193,11 @@ namespace ProjectCrimping
                             _state.N2_IW = f.IW;
                         }
                         _nStep = 3;
-                        SetNButtonState(NState.Ready);   // label berubah jadi "N3"
+                        SetNButtonState(NState.Ready);
                         break;
 
                     case 3:
-                        SubmitN3();   // langkah terakhir + simpan ke DB
+                        SubmitN3();
                         break;
                 }
             };
@@ -1042,18 +1205,6 @@ namespace ProjectCrimping
             return btnN;
         }
 
-        /// <summary>
-        /// Langkah terakhir (N3): input ukuran N3 → konfirmasi NG → INSERT ke DB.
-        ///
-        /// Titik keluar:
-        ///  - User Cancel di FormN3        : return, tetap di N3.
-        ///  - User Cancel di konfirmasi NG : data N3 dibersihkan, tetap di N3.
-        ///  - INSERT gagal                 : tetap di N3 supaya bisa dicoba lagi
-        ///                                   (data N1/N2/N3 masih tersimpan di _state).
-        ///  - INSERT sukses                : WOS dikosongkan & dibuka untuk scan
-        ///                                   berikutnya, tombol kembali ke N1,
-        ///                                   tabel dimuat ulang.
-        /// </summary>
         private void SubmitN3()
         {
             using (var f = new FormN3(
@@ -1070,7 +1221,6 @@ namespace ProjectCrimping
                 _state.N3_IW = f.IW;
             }
 
-            // Tanya jumlah NG (opsional). Kalau user batal, buang data N3.
             using (var fng = new FormConfirmNG())
             {
                 if (fng.ShowDialog(this) != DialogResult.OK)
@@ -1079,49 +1229,48 @@ namespace ProjectCrimping
                     return;
                 }
 
-                // HasNG=false → simpan NULL (bukan 0)
                 _state.N3_NG = fng.HasNG ? (int?)fng.NGValue : null;
+            }
+
+            if (IsWosDuplicate(
+                    txtWos.Text.Trim(),
+                    txtTerminal.Text.Trim(),
+                    txtAplikator.Text.Trim(),
+                    Session.Noreg))
+            {
+                NotifPopup.Warning(this, "WOS Sudah Diinput",
+                    "WOS ini baru saja diinput oleh proses lain.\n" +
+                    "Data tidak disimpan untuk menghindari duplikat.\n\n" +
+                    "Silakan scan WOS lain.");
+
+                _state.ClearN3();
+                SetNButtonState(NState.Ready);
+                return;
             }
 
             if (!InsertLhhpWH())
             {
-                SetNButtonState(NState.Ready);   // tetap di N3, bisa coba lagi
+                SetNButtonState(NState.Ready);
                 return;
             }
 
-            // ---- Sukses: siapkan siklus berikutnya ----
             txtWos.Clear();
-            LockField(fieldWos, txtWos, eraseWos, false);   // buka WOS lagi
+            LockField(fieldWos, txtWos, eraseWos, false);
             ResetBorder(fieldWos);
 
-            ResetNStateOnly();   // _nStep kembali ke 1, tombol terkunci; patokan TETAP
+            ResetAfterSubmit();
 
-            // BeginInvoke: tunggu dialog benar-benar tertutup sebelum set fokus,
-            // kalau tidak fokus bisa "hilang".
             BeginInvoke(new Action(() =>
             {
                 txtWos.Focus();
                 txtWos.SelectAll();
             }));
 
-            RefreshTable();   // tampilkan data yang baru disimpan
+            RefreshTable();
         }
 
         // =====================================================
         //  TABEL RIWAYAT
-        //
-        //  Menampilkan data hari produksi ini untuk kombinasi
-        //  terminal + aplikator + operator. Urutan terbaru di atas.
-        //
-        //  Layout kolom bersifat responsif:
-        //   - AutoSizeColumnsMode.Fill + FillWeight = lebar awal → kolom ikut
-        //     melebar di layar lebar.
-        //   - MinimumWidth menjaga kolom tidak terlalu sempit → di layar kecil
-        //     muncul scroll horizontal.
-        //
-        //  Menambah kolom baru: (1) tambah dgv.Columns.Add, (2) atur lebar,
-        //  (3) tambahkan nilainya di dgv.Rows.Add pada LoadDataCrimping
-        //  DENGAN URUTAN YANG SAMA.
         // =====================================================
         private Control BuildTableCard()
         {
@@ -1141,7 +1290,7 @@ namespace ProjectCrimping
                 BorderStyle = BorderStyle.None,
                 CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
                 GridColor = Color.FromArgb(238, 241, 245),
-                EnableHeadersVisualStyles = false,   // wajib false agar warna header kustom dipakai
+                EnableHeadersVisualStyles = false,
                 ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
                 ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
                 ColumnHeadersHeight = 46,
@@ -1150,21 +1299,19 @@ namespace ProjectCrimping
                 AllowUserToResizeRows = false,
                 ReadOnly = true,
                 RowTemplate = { Height = 34 },
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,   // diganti Fill di bagian bawah method
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 ScrollBars = ScrollBars.Both
             };
 
-            // ---- Gaya header ----
             dgv.ColumnHeadersDefaultCellStyle.BackColor = Navy;
             dgv.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
             dgv.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 8.5f);
             dgv.ColumnHeadersDefaultCellStyle.Padding = new Padding(4, 0, 4, 0);
-            dgv.ColumnHeadersDefaultCellStyle.WrapMode = DataGridViewTriState.True;   // agar "\n" di judul kolom jadi 2 baris
+            dgv.ColumnHeadersDefaultCellStyle.WrapMode = DataGridViewTriState.True;
             dgv.ColumnHeadersDefaultCellStyle.SelectionBackColor = Navy;
             dgv.ColumnHeadersDefaultCellStyle.SelectionForeColor = Color.White;
 
-            // ---- Gaya sel ----
             dgv.DefaultCellStyle.BackColor = Color.White;
             dgv.DefaultCellStyle.ForeColor = TextDark;
             dgv.DefaultCellStyle.Font = new Font("Segoe UI", 9f);
@@ -1172,7 +1319,6 @@ namespace ProjectCrimping
             dgv.DefaultCellStyle.SelectionBackColor = AccentSoft;
             dgv.DefaultCellStyle.SelectionForeColor = TextDark;
 
-            // ---- Definisi kolom (URUTAN = urutan argumen di dgv.Rows.Add) ----
             dgv.Columns.Add("colNo", "NO");
             dgv.Columns.Add("colLotNo", "LOT\nNUMBER");
             dgv.Columns.Add("colSkema", "SKEMA");
@@ -1193,14 +1339,12 @@ namespace ProjectCrimping
             dgv.Columns.Add("colNg", "NG");
             dgv.Columns.Add("colTension", "TENSION");
 
-            // Lebar awal kolom teks
             dgv.Columns["colNo"].Width = 45;
             dgv.Columns["colLotNo"].Width = 130;
             dgv.Columns["colSkema"].Width = 80;
             dgv.Columns["colTerminal"].Width = 100;
             dgv.Columns["colAplikator"].Width = 110;
 
-            // Kolom teks: rata kiri, lebar minimum = lebar awal
             foreach (var name in new[] { "colLotNo", "colSkema", "colTerminal", "colAplikator" })
             {
                 var col = dgv.Columns[name];
@@ -1208,14 +1352,12 @@ namespace ProjectCrimping
                 col.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
             }
 
-            // Kolom No: rata tengah, font Consolas (angka rata)
             var colNo = dgv.Columns["colNo"];
             colNo.MinimumWidth = 45;
             colNo.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
             colNo.DefaultCellStyle.Font = new Font("Consolas", 9f);
             colNo.HeaderCell.Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
 
-            // Kolom angka (hasil ukur): rata tengah, font monospace Consolas
             foreach (var name in new[]
             {
                 "colChN1", "colIhN1", "colCwN1", "colIwN1",
@@ -1232,13 +1374,9 @@ namespace ProjectCrimping
                 col.HeaderCell.Style.Alignment = DataGridViewContentAlignment.MiddleCenter;
             }
 
-            // Tension sedikit lebih lebar dari kolom angka lain
             dgv.Columns["colTension"].Width = 80;
             dgv.Columns["colTension"].MinimumWidth = 80;
 
-            // ===== Responsif: kolom ikut melebar di layar lebar,
-            //       tetap scroll horizontal kalau layar sempit (karena MinimumWidth) =====
-            // PENTING: FillWeight harus diset SETELAH semua Width final di atas.
             foreach (DataGridViewColumn c in dgv.Columns)
                 c.FillWeight = c.Width;
             dgv.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
@@ -1250,14 +1388,41 @@ namespace ProjectCrimping
         }
 
         // =====================================================
+        //  QUERY: tanggal PRODUKSI dari jam server SQL
+        //  Konsisten dengan LoadDataCrimping / IsWosDuplicate:
+        //  sebelum jam 06:00 masih dihitung hari kemarin.
+        // =====================================================
+        private DateTime? GetServerTanggalProduksi()
+        {
+            const string sql = @"
+SELECT CASE
+           WHEN DATEPART(HOUR, GETDATE()) < 6
+               THEN CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
+           ELSE CAST(GETDATE() AS DATE)
+       END;";
+
+            try
+            {
+                using (var conn = _db.Open())
+                using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
+                {
+                    cmd.CommandTimeout = 5;
+                    object result = cmd.ExecuteScalar();
+
+                    if (result == null || result == DBNull.Value) return null;
+                    return Convert.ToDateTime(result);
+                }
+            }
+            catch (Exception ex)
+            {
+                NotifPopup.Error(this, "Error Ambil Tanggal Server",
+                    "Gagal mengambil tanggal dari server:\n\n" + ex.Message);
+                return null;
+            }
+        }
+
+        // =====================================================
         //  EXPORT PDF
-        //
-        //  Tidak membuat PDF di aplikasi ini; hanya membuka URL laporan
-        //  di browser default. PDF digenerate oleh aplikasi web PHP
-        //  (laporan-w-h/controllers/export.php).
-        //
-        //  Syarat: web server lokal (localhost) berjalan. Kalau server
-        //  pindah/ganti, ubah konstanta baseUrl di bawah.
         // =====================================================
         private void ExportPdf()
         {
@@ -1266,7 +1431,6 @@ namespace ProjectCrimping
             string terminal = txtTerminal?.Text?.Trim();
             string mesin = Session.mesin;
 
-            // Semua parameter wajib terisi
             if (string.IsNullOrWhiteSpace(noreg) ||
                 string.IsNullOrWhiteSpace(aplikator) ||
                 string.IsNullOrWhiteSpace(terminal) ||
@@ -1277,10 +1441,12 @@ namespace ProjectCrimping
                 return;
             }
 
-            string tanggal = DateTime.Now.ToString("yyyy-MM-dd");
-            const string baseUrl = "http://localhost/laporan-w-h/controllers/export.php";
+            DateTime? tglServer = GetServerTanggalProduksi();
+            if (tglServer == null) return;   // error sudah ditampilkan di method
 
-            // EscapeDataString: aman untuk karakter khusus di URL
+            string tanggal = tglServer.Value.ToString("yyyy-MM-dd");
+            const string baseUrl = "http://192.168.5.4/laporan-crimping-manual/controllers/export.php";
+
             string url =
                 $"{baseUrl}?action=export_pdf" +
                 $"&noreg={Uri.EscapeDataString(noreg)}" +
@@ -1291,7 +1457,6 @@ namespace ProjectCrimping
 
             try
             {
-                // UseShellExecute = true → buka URL dengan browser default
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = url,
@@ -1308,13 +1473,6 @@ namespace ProjectCrimping
         // =====================================================
         //  HELPER: Lock / Validasi / Flash
         // =====================================================
-
-        /// <summary>
-        /// Mengunci / membuka sebuah field.
-        /// Terkunci  = TextBox ReadOnly + warna abu (belum boleh diisi).
-        /// Terbuka   = TextBox bisa diketik + warna normal.
-        /// Tombol erase selalu aktif supaya operator selalu bisa mereset.
-        /// </summary>
         private void LockField(RoundedPanel field, TextBox tb, RoundedButton erase, bool locked)
         {
             tb.ReadOnly = locked;
@@ -1337,10 +1495,6 @@ namespace ProjectCrimping
             erase.Enabled = true;
         }
 
-        /// <summary>
-        /// Cek field tidak kosong. Kalau kosong: border merah selama 1,2 detik
-        /// lalu otomatis kembali normal. Return false kalau kosong.
-        /// </summary>
         private bool ValidateNotEmpty(TextBox tb, RoundedPanel field)
         {
             if (!string.IsNullOrWhiteSpace(tb.Text)) return true;
@@ -1348,8 +1502,6 @@ namespace ProjectCrimping
             field.BorderColor = ErrorColor;
             field.Invalidate();
 
-            // Timer WinForms (System.Windows.Forms.Timer) berjalan di UI thread,
-            // aman menyentuh kontrol. Wajib di-Dispose sendiri setelah selesai.
             var t = new Timer { Interval = 1200 };
             t.Tick += (s, e) =>
             {
@@ -1364,7 +1516,6 @@ namespace ProjectCrimping
             return false;
         }
 
-        /// <summary>Kedipkan border hijau 0,8 detik sebagai tanda input valid.</summary>
         private void FlashSuccess(RoundedPanel field)
         {
             field.BorderColor = SuccessColor;
@@ -1381,7 +1532,6 @@ namespace ProjectCrimping
             t.Start();
         }
 
-        /// <summary>Kembalikan border field ke warna normal (menghapus merah/hijau sisa).</summary>
         private void ResetBorder(params RoundedPanel[] fields)
         {
             foreach (var f in fields)
@@ -1392,18 +1542,10 @@ namespace ProjectCrimping
         }
 
         // =====================================================
-        //  HELPER: State tombol N (1 tombol dinamis)
+        //  STATE tombol N
         // =====================================================
-
-        /// <summary>Locked = abu-abu, tidak merespon klik. Ready = oranye, bisa diklik.</summary>
         private enum NState { Locked, Ready }
 
-        /// <summary>
-        /// Mengatur tampilan + status tombol N.
-        /// Label otomatis "N" + _nStep. Status disimpan di btnN.Tag
-        /// dan dicek di handler Click (bukan lewat Enabled, supaya
-        /// tampilan terkunci tetap terlihat jelas dan tidak "greyed out" bawaan Windows).
-        /// </summary>
         private void SetNButtonState(NState state)
         {
             if (btnN == null) return;
@@ -1433,8 +1575,16 @@ namespace ProjectCrimping
             btnN.Invalidate();
         }
 
-        // ===== Reset TOTAL: hasil N1-N3 DAN patokan terhapus =====
-        // Dipakai saat Lotno/Terminal di-reset (harus scan Lotno ulang).
+        // =====================================================
+        //  RESET STATE
+        // =====================================================
+
+        /// <summary>
+        /// Reset TOTAL.
+        /// Menghapus hasil N1/N2/N3 + patokan + sisi + Tiproductname.
+        /// Dipakai saat Lotno/Terminal direset → operator WAJIB
+        /// scan Lotno ulang sebelum bisa lanjut.
+        /// </summary>
         private void ResetNState()
         {
             _state.ClearAll();
@@ -1442,14 +1592,20 @@ namespace ProjectCrimping
             SetNButtonState(NState.Locked);
         }
 
-        // ===== Reset N SAJA: patokan TETAP =====
-        // Dipakai saat erase Aplikator/WOS dan setelah simpan sukses,
-        // supaya operator tidak perlu scan Lotno ulang.
-        private void ResetNStateOnly()
+        /// <summary>
+        /// Reset SETELAH SUBMIT N3 / ERASE APLIKATOR / ERASE WOS.
+        /// Menghapus hasil N1/N2/N3 + patokan + sisi,
+        /// TAPI Tiproductname DIPERTAHANKAN.
+        /// Jadi operator bisa LANGSUNG scan WOS berikutnya tanpa
+        /// scan Lotno & Aplikator lagi.
+        /// </summary>
+        private void ResetAfterSubmit()
         {
             _state.ClearN1();
             _state.ClearN2();
             _state.ClearN3();
+            _state.ClearPatokanOnly();
+
             _nStep = 1;
             SetNButtonState(NState.Locked);
         }
@@ -1461,19 +1617,9 @@ namespace ProjectCrimping
 
         // =====================================================
         //  QUERY: LoadDataCrimping
-        //
-        //  Memuat riwayat input hari produksi ini ke tabel.
-        //
-        //  Definisi "hari produksi": 06:00 s/d 06:00 esok hari.
-        //   - Jam sekarang < 06:00 → masih dihitung hari produksi KEMARIN.
-        //   - Rentang query: tanggalProduksi + 6 jam  s/d  tanggalProduksi + 30 jam.
-        //
-        //  Filter: terminal + aplikator + noreg operator yang login
-        //  (operator hanya melihat data miliknya sendiri).
         // =====================================================
         private void LoadDataCrimping(string terminal, string aplikator, string noreg)
         {
-            // Parameter belum lengkap → jangan query
             if (string.IsNullOrEmpty(terminal) ||
                 string.IsNullOrEmpty(aplikator) ||
                 string.IsNullOrEmpty(noreg))
@@ -1498,7 +1644,7 @@ SELECT
     ng_n3,
     tension,
     created_at
-FROM Tr_LhhpWH_copy
+FROM TrCrimpingResult
 WHERE terminal = @terminal
   AND aplikator = @aplikator
   AND noreg = @noreg
@@ -1519,7 +1665,7 @@ ORDER BY created_at DESC;";
                     {
                         dgv.Rows.Clear();
 
-                        int no = 0;   // nomor urut tampilan (bukan dari DB)
+                        int no = 0;
                         while (reader.Read())
                         {
                             no++;
@@ -1528,7 +1674,6 @@ ORDER BY created_at DESC;";
                             string term = reader["terminal"] as string ?? "";
                             string apl = reader["aplikator"] as string ?? "";
 
-                            // Pecah WOS "BEJ81212112.001" → lotNo "BEJ81212112" + skema "1"
                             string lotNo = "";
                             string skema = "-";
 
@@ -1540,7 +1685,6 @@ ORDER BY created_at DESC;";
                                     lotNo = wos.Substring(0, idx);
                                     string skemaStr = wos.Substring(idx + 1);
 
-                                    // ===== Konversi skema ke int (001 → 1) =====
                                     if (int.TryParse(skemaStr, out int skemaInt))
                                         skema = skemaInt.ToString();
                                     else
@@ -1548,12 +1692,10 @@ ORDER BY created_at DESC;";
                                 }
                                 else
                                 {
-                                    // Tidak ada titik valid: tampilkan WOS apa adanya
                                     lotNo = wos;
                                 }
                             }
 
-                            // FormatDecimal: NULL / tidak valid → "-", selain itu 2 desimal
                             string chN1 = FormatDecimal(reader["ch_n1"]);
                             string ihN1 = FormatDecimal(reader["ih_n1"]);
                             string cwN1 = FormatDecimal(reader["cw_n1"]);
@@ -1572,7 +1714,6 @@ ORDER BY created_at DESC;";
                             string ng = FormatInt(reader["ng_n3"]);
                             string tension = FormatDecimal(reader["tension"]);
 
-                            // URUTAN HARUS SAMA dengan definisi kolom di BuildTableCard
                             dgv.Rows.Add(
                                 no,
                                 lotNo, skema, term, apl,
@@ -1582,7 +1723,7 @@ ORDER BY created_at DESC;";
                                 ng, tension);
                         }
 
-                        dgv.ClearSelection();   // jangan ada baris ter-highlight otomatis
+                        dgv.ClearSelection();
                     }
                 }
             }
@@ -1593,7 +1734,6 @@ ORDER BY created_at DESC;";
             }
         }
 
-        /// <summary>Muat ulang tabel dengan filter yang sedang aktif di form.</summary>
         private void RefreshTable()
         {
             LoadDataCrimping(
@@ -1603,24 +1743,17 @@ ORDER BY created_at DESC;";
         }
 
         // =====================================================
-        //  INSERT: simpan satu siklus N1+N2+N3 ke Tr_LhhpWH_copy
-        //
-        //  Return true  = 1+ baris tersimpan.
-        //  Return false = gagal (popup error sudah ditampilkan di sini).
-        //
-        //  Nilai yang null di _state dikirim sebagai DBNull.
-        //  Kolom tension hanya diisi dari N1 (N2/N3 tidak mengukur tension).
-        //  Kolom created_at diisi server (getDate()), bukan jam komputer client.
+        //  INSERT: simpan satu siklus N1+N2+N3
         // =====================================================
         private bool InsertLhhpWH()
         {
             string terminal = txtTerminal.Text.Trim();
             string aplikator = txtAplikator.Text.Trim();
             string wos = txtWos.Text.Trim();
-            string lotno = wos.Split('.')[0];   // bagian sebelum titik
+            string lotno = wos.Split('.')[0];
 
             const string sql = @"
-INSERT INTO Tr_LhhpWH_copy
+INSERT INTO TrCrimpingResult
 (
     noreg, terminal, lotno, aplikator, Wos,
     ch_n1, ih_n1, cw_n1, iw_n1, tension,
@@ -1642,34 +1775,29 @@ VALUES
                 using (var conn = _db.Open())
                 using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
                 {
-                    // ---- Identitas ----
                     cmd.Parameters.AddWithValue("@noreg", Session.Noreg ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@terminal", terminal);
                     cmd.Parameters.AddWithValue("@lotno", lotno);
                     cmd.Parameters.AddWithValue("@aplikator", aplikator);
                     cmd.Parameters.AddWithValue("@wos", wos);
 
-                    // ---- N1 (termasuk tension) ----
                     cmd.Parameters.AddWithValue("@ch_n1", _state.N1_CH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@ih_n1", _state.N1_IH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@cw_n1", _state.N1_CW ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@iw_n1", _state.N1_IW ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@tension", _state.N1_Tension ?? (object)DBNull.Value);
 
-                    // ---- N2 ----
                     cmd.Parameters.AddWithValue("@ch_n2", _state.N2_CH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@ih_n2", _state.N2_IH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@cw_n2", _state.N2_CW ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@iw_n2", _state.N2_IW ?? (object)DBNull.Value);
 
-                    // ---- N3 (termasuk NG) ----
                     cmd.Parameters.AddWithValue("@ch_n3", _state.N3_CH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@ih_n3", _state.N3_IH ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@cw_n3", _state.N3_CW ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@iw_n3", _state.N3_IW ?? (object)DBNull.Value);
                     cmd.Parameters.AddWithValue("@ng_n3", _state.N3_NG ?? (object)DBNull.Value);
 
-                    // ---- Konteks sesi login ----
                     cmd.Parameters.AddWithValue("@shift", Session.Shift);
                     cmd.Parameters.AddWithValue("@kode_mesin", Session.mesin ?? (object)DBNull.Value);
 
@@ -1695,39 +1823,24 @@ VALUES
         // =====================================================
         //  HELPER FORMAT TAMPILAN
         // =====================================================
-
-        /// <summary>Nilai DB → teks 2 desimal. NULL / tidak valid → "-".</summary>
         private static string FormatDecimal(object value)
         {
-            if (value == null || value == DBNull.Value)
-                return "-";
-
+            if (value == null || value == DBNull.Value) return "-";
             decimal d;
-            if (!decimal.TryParse(value.ToString(), out d))
-                return "-";
-
+            if (!decimal.TryParse(value.ToString(), out d)) return "-";
             return d.ToString("0.00");
         }
 
-        /// <summary>Nilai DB → teks bilangan bulat. NULL / tidak valid → "-".</summary>
         private static string FormatInt(object value)
         {
-            if (value == null || value == DBNull.Value)
-                return "-";
-
+            if (value == null || value == DBNull.Value) return "-";
             int i;
-            if (!int.TryParse(value.ToString(), out i))
-                return "-";
-
+            if (!int.TryParse(value.ToString(), out i)) return "-";
             return i.ToString();
         }
 
         // =====================================================
         //  QUERY: Lotno → tiproductname
-        //
-        //  tlotid (lotno hasil scan) dicari di dbInventory2..tblFifo,
-        //  lalu di-JOIN ke tblItem untuk mendapat nama produk terminal.
-        //  Return null kalau tidak ditemukan / terjadi error.
         // =====================================================
         private string GetTiproductnameByLotno(string tlotid)
         {
@@ -1760,30 +1873,21 @@ WHERE a.tlotid = @tlotid;";
         }
 
         // =====================================================
-        //  QUERY: tiproductname → patokan Terminal A/B
-        //
-        //  Tabel TrRPHMesin menyimpan standar ukuran per mesin:
-        //    sisi A: cha, iha, cwa, iwa, T1 (tension)
-        //    sisi B: chb, ihb, cwb, iwb, T2 (tension)
-        //  Satu baris bisa cocok di sisi A, sisi B, atau keduanya,
-        //  jadi satu baris DB bisa menghasilkan 0-2 TerminalResult.
-        //
-        //  Hasil diurutkan dari RPH terbaru (KodeRPHMeisn DESC).
-        //  Catatan: nama kolom "KodeRPHMeisn" memang begitu di database
-        //  (typo asli), jangan "diperbaiki" tanpa mengubah skema DB.
+        //  QUERY: tiproductname + WOS → patokan di TrRPHMesin
         // =====================================================
-        private List<TerminalResult> CheckTerminal(string tiproductname)
+        private List<TerminalResult> CheckTerminal(string tiproductname, string wos)
         {
             var list = new List<TerminalResult>();
             if (string.IsNullOrWhiteSpace(tiproductname)) return list;
+            if (string.IsNullOrWhiteSpace(wos)) return list;
 
             const string sql = @"
 SELECT KodeMesin, TERMINALA, TERMINALB,
        cha, iha, cwa, iwa, T1,
        chb, ihb, cwb, iwb, T2
-FROM [assy].[dbo].[TrRPHMesin]
-WHERE TERMINALA = @tiproductname
-   OR TERMINALB = @tiproductname
+FROM [KUJNAGN].[dbo].[TrRPHMesin]
+WHERE (TERMINALA = @tiproductname OR TERMINALB = @tiproductname)
+  AND barcode = @wos
 ORDER BY KodeRPHMeisn DESC;";
 
             try
@@ -1792,6 +1896,7 @@ ORDER BY KodeRPHMeisn DESC;";
                 using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
                 {
                     cmd.Parameters.AddWithValue("@tiproductname", tiproductname);
+                    cmd.Parameters.AddWithValue("@wos", wos);
 
                     using (var reader = cmd.ExecuteReader())
                     {
@@ -1800,7 +1905,6 @@ ORDER BY KodeRPHMeisn DESC;";
                             string termA = reader["TERMINALA"] as string;
                             string termB = reader["TERMINALB"] as string;
 
-                            // Cocok di sisi A → ambil kolom *a
                             if (termA == tiproductname)
                             {
                                 list.Add(new TerminalResult
@@ -1815,7 +1919,6 @@ ORDER BY KodeRPHMeisn DESC;";
                                 });
                             }
 
-                            // Cocok di sisi B → ambil kolom *b
                             if (termB == tiproductname)
                             {
                                 list.Add(new TerminalResult
@@ -1844,11 +1947,6 @@ ORDER BY KodeRPHMeisn DESC;";
 
         // =====================================================
         //  QUERY: validasi kode Aplikator ke MSAplikator
-        //
-        //  Memakai LIKE '%kode%' (mengandung), bukan sama persis,
-        //  karena hasil scan bisa berisi prefix/suffix tambahan.
-        //  Konsekuensi: kode pendek bisa cocok dengan banyak aplikator.
-        //  Kalau ingin lebih ketat, ganti ke "KodeAplikator = @kode".
         // =====================================================
         private bool CheckAplikator(string kodeAplikator)
         {
@@ -1878,12 +1976,59 @@ WHERE KodeAplikator LIKE '%' + @kode + '%';";
         }
 
         // =====================================================
-        //  VALIDASI: Skema pada WOS harus tepat 3 digit angka
-        //
-        //  Contoh valid  : "BEJ81212112.001"  → skemaInt = 1
-        //  Contoh invalid: "BEJ81212112.01", "BEJ81212112.0A1", "BEJ81212112."
-        //
-        //  Skema diambil dari bagian setelah titik TERAKHIR.
+        //  QUERY: cek WOS duplikat
+        // =====================================================
+        private bool IsWosDuplicate(string wos, string terminal, string aplikator, string noreg)
+        {
+            if (string.IsNullOrWhiteSpace(wos) ||
+                string.IsNullOrWhiteSpace(terminal) ||
+                string.IsNullOrWhiteSpace(aplikator) ||
+                string.IsNullOrWhiteSpace(noreg))
+                return false;
+
+            const string sql = @"
+DECLARE @tanggalProduksi DATE =
+    CASE
+        WHEN DATEPART(HOUR, GETDATE()) < 6
+            THEN CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
+        ELSE
+            CAST(GETDATE() AS DATE)
+    END;
+
+SELECT COUNT(*)
+FROM TrCrimpingResult
+WHERE Wos = @wos
+  AND noreg = @noreg
+  AND terminal = @terminal
+  AND aplikator = @aplikator
+  AND created_at >= DATEADD(HOUR, 6, CAST(@tanggalProduksi AS DATETIME))
+  AND created_at <  DATEADD(HOUR, 30, CAST(@tanggalProduksi AS DATETIME));";
+
+            try
+            {
+                using (var conn = _db.Open())
+                using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
+                {
+                    cmd.Parameters.AddWithValue("@wos", wos);
+                    cmd.Parameters.AddWithValue("@noreg", noreg);
+                    cmd.Parameters.AddWithValue("@terminal", terminal);
+                    cmd.Parameters.AddWithValue("@aplikator", aplikator);
+
+                    int count = Convert.ToInt32(cmd.ExecuteScalar());
+                    return count > 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                NotifPopup.Error(this, "Error Cek Duplikat WOS",
+                    "Gagal cek WOS duplikat ke database:\n\n" + ex.Message);
+
+                return true;
+            }
+        }
+
+        // =====================================================
+        //  VALIDASI: Skema pada WOS
         // =====================================================
         private bool TryParseSkema(string wos, out int skemaInt)
         {
@@ -1891,24 +2036,22 @@ WHERE KodeAplikator LIKE '%' + @kode + '%';";
             if (string.IsNullOrWhiteSpace(wos)) return false;
 
             int idx = wos.LastIndexOf('.');
-            if (idx < 0 || idx >= wos.Length - 1) return false;   // tidak ada titik / kosong setelah titik
+            if (idx < 0 || idx >= wos.Length - 1) return false;
 
             string skema = wos.Substring(idx + 1).Trim();
 
-            // Harus tepat 3 digit angka
-            if (skema.Length != 3) return false;
+            // Fleksibel: 1 s/d 5 digit angka
+            if (skema.Length < 1 || skema.Length > 5) return false;
             if (!skema.All(char.IsDigit)) return false;
 
             return int.TryParse(skema, out skemaInt);
         }
 
-        /// <summary>Nilai DB → decimal?. NULL / tidak valid → null.</summary>
         private static decimal? ReadDecimal(object value)
         {
             if (value == null || value == DBNull.Value) return null;
             decimal d;
             return decimal.TryParse(value.ToString(), out d) ? d : (decimal?)null;
         }
-
     }
 }

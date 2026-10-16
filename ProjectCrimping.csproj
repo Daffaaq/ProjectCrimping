@@ -194,6 +194,9 @@
     <Compile Include="AppThemeDashboard.cs" />
     <Compile Include="AppThemeLogin.cs" />
     <Compile Include="AppThemePopup.cs" />
+    <Compile Include="AvatarPicture.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Dashboard.cs">
       <SubType>Form</SubType>
     </Compile>
