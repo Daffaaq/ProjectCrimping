@@ -317,12 +317,16 @@ namespace ProjectCrimping
 
         // ================================================================
         //  HELPER: parse barcode mesin. Format: CRP<no>-<area>
+        //
+        //  PERBAIKAN BUG: Inputan di-capital-kan semua terlebih dahulu
+        //  agar format yang di-return selalu konsisten (Contoh: CRP15-R2).
         // ================================================================
         private static (string Area, string No)? ExtractMesin(string rawInput)
         {
             if (string.IsNullOrWhiteSpace(rawInput))
                 return null;
 
+            // Ubah ke kapital untuk mempermudah pengecekan
             string trimmed = rawInput.Trim().ToUpperInvariant();
 
             if (!trimmed.StartsWith(MesinPrefix, StringComparison.Ordinal))
@@ -341,6 +345,7 @@ namespace ProjectCrimping
             if (area.Length != 2 || area[0] != 'R' || !char.IsDigit(area[1]))
                 return null;
 
+            // KEMBALIKAN DALAM FORMAT KAPITAL (SERAGAM)
             return (area, no);
         }
 
@@ -437,6 +442,10 @@ namespace ProjectCrimping
 
         // ================================================================
         //  LOOKUP MESIN
+        //
+        //  PERBAIKAN BUG: Menyimpan `_lastMesinRaw` dalam format standar
+        //  (CRP<No>-<Area>) supaya konsisten meskipun operator mengetik
+        //  dengan huruf kecil.
         // ================================================================
         private async Task LookupMesinAsync()
         {
@@ -489,7 +498,11 @@ namespace ProjectCrimping
                 }
                 else
                 {
-                    _lastMesinRaw = raw;
+                    // ========================================================
+                    // PERBAIKAN BUG: Simpan format standar (Kapital), 
+                    // bukan inputan asli operator.
+                    // ========================================================
+                    _lastMesinRaw = $"CRP{mchNo}-{mchArea}";
                     _lastMchName = mchName;
                     _lastMchArea = mchArea;
                     _lastMchNo = mchNo;

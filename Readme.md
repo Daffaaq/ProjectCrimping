@@ -1,8 +1,8 @@
 ﻿# ProjectCrimping
 
-Aplikasi desktop **WinForms (C#)** untuk operator mesin crimping. Dipakai untuk mencatat hasil pengukuran crimping (N1/N2/N3), request terminal, dan memanggil bantuan (Setter / Maintenance / Penyedia WIP) lengkap dengan pencatatan downtime.
+Aplikasi desktop **WinForms (C#)** untuk operator mesin crimping. Dipakai untuk mencatat hasil pengukuran crimping (N1/N2/N3), request terminal, export laporan, dan memanggil bantuan (Setter / Maintenance / Penyedia WIP) lengkap dengan pencatatan downtime.
 
-Semua input dirancang untuk **barcode scanner** (operator, mesin, terminal, aplikator, WOS), jadi operator cukup scan lalu tekan Enter.
+Semua input dirancang untuk **barcode scanner** (operator, mesin, lot material, aplikator, WOS), jadi operator cukup scan lalu tekan Enter.
 
 ---
 
@@ -11,17 +11,18 @@ Semua input dirancang untuk **barcode scanner** (operator, mesin, terminal, apli
 | Modul | Form | Fungsi |
 |-------|------|--------|
 | Login | `Login` | Scan operator, pilih shift, scan mesin, lalu masuk ke Dashboard |
-| Dashboard Crimping | `Dashboard` | Input Terminal → Aplikator → WOS, lalu isi N1 → N2 → N3 dan simpan |
-| Input N1 / N2 / N3 | `FormN1`, `FormN2`, `FormN3` | Popup input data pengukuran (CH, IH, dan lainnya) |
-| Request Terminal | `FormRequestTerminal` | Scan WOS, pilih Terminal A/B, simpan request ke database |
+| Dashboard Crimping | `Dashboard` | Scan LOT MATERIAL → Aplikator → WOS, lalu isi N1 → N2 → N3 dan simpan |
+| Input N1 / N2 / N3 | `FormN1`, `FormN2`, `FormN3`, `FormConfirmNG` | Popup input ukuran (CH, IH, CW, IW, Tension) dan konfirmasi NG |
+| Request Terminal | `FormRequestTerminal` | Scan WOS, pilih Terminal A **atau** B, simpan request ke database |
 | Maintenance Call | `FormMaintenanceCall` | Panggil Setter / Maintenance / Penyedia WIP, isi detail problem, simpan downtime |
+| Export | (di `Dashboard`) | Membuka laporan PDF crimping di browser |
 
 ---
 
 ## Tech Stack
 
 - **Bahasa / Framework:** C# + Windows Forms (.NET Framework)
-- **UI:** Guna.UI2.WinForms, plus custom control (`RoundedButton`, `RoundedPanel`, `InfoAccordion`, `AvatarCircle`, `SidebarPanel`, `NotifPopup`, dan lainnya)
+- **UI:** Guna.UI2.WinForms, plus custom control (`RoundedButton`, `RoundedPanel`, `InfoAccordion`, `AvatarCircle`, `AvatarPicture`, `SidebarPanel`, `NotifPopup`, dan lainnya)
 - **Ikon:** Segoe MDL2 Assets (dengan fallback emoji)
 - **Database:**
   - **SQL Server 2008** via `System.Data.SqlClient` (data utama)
@@ -41,7 +42,7 @@ Semua input dirancang untuk **barcode scanner** (operator, mesin, terminal, apli
 
 Validasi dilakukan dua lapis:
 
-- **Format (client-side):** prefix dan pola barcode.
+- **Format (client-side):**
   - Operator wajib berawalan `ExcitedCRP` (case-insensitive).
   - Mesin wajib `CRP` + **2 digit** + `-` + `R` + **1 digit** (contoh `CRP01-R2`, `CRP07-R4`).
 - **Data (server-side):**
@@ -59,55 +60,85 @@ Setelah login, data disimpan di static class `Session`:
 | Field | Isi |
 |-------|-----|
 | `Noreg`, `Nama` | Operator |
+| `ext` | Ekstensi file foto profil operator |
 | `Shift` | 1 / 2 |
 | `mesin` | Raw barcode, contoh `CRP15-R2` |
 | `MesinName`, `MesinArea`, `MesinNo` | Hasil parse dan lookup mesin |
+| `ShiftDisplay`, `MesinDisplay` | Teks untuk accordion Shift & Mesin |
 | `IsLoggedIn` | Status login |
 
-### 3. Dashboard Crimping
+### 3. Dashboard Crimping ("Shopfloor Crimping")
+
+Layout: sidebar kiri (270 px) + konten (Card LOT MATERIAL & APLIKATOR, Card WOS, tombol N, tabel riwayat).
 
 Urutan input (field dikunci/dibuka bertahap):
 
-1. **TERMINAL**: scan lalu Enter → field terkunci, lanjut ke Aplikator.
-2. **APLIKATOR**: scan lalu Enter → terkunci, lanjut ke WOS, tabel riwayat langsung dimuat.
-3. **WOS**: scan lalu Enter. WOS **harus mengandung titik** (contoh `6B26031961.0001`) karena `LotNo` diambil dari bagian sebelum titik pertama. Setelah valid, tombol **N1** menjadi *Ready*.
+1. **LOT MATERIAL** (scan lalu Enter)
+   - Dicari di `dbInventory2..tblFifo` (`tlotid`) yang di-join ke `dbInventory2..tblItem` untuk mendapat `tiid` dan `tipartnumber`.
+   - Kalau tidak ditemukan, muncul peringatan dan field tetap terbuka.
+   - Tiga nilai disimpan di state:
+     - `LotMaterial`: barcode asli yang discan. **Inilah yang disimpan** ke kolom `terminal` di database.
+     - `Tipartnumber`: dipakai untuk cek terminal (prioritas) dan **ditampilkan menggantikan teks di field**.
+     - `Tiid`: kunci cadangan untuk cek terminal.
+2. **APLIKATOR** (scan lalu Enter)
+   - Divalidasi ke tabel `MSAplikator` (`KodeAplikator LIKE '%kode%'`).
+   - Kalau valid, field terkunci dan tabel riwayat langsung dimuat.
+3. **WOS** (scan lalu Enter)
+   - Format harus mengandung titik dan bagian setelah titik terakhir (skema) berupa **1–5 digit angka**, contoh `BEJ81212112.001`.
+   - Dicari **patokan** di `KUJNAGN.dbo.TrRPHMesin` (`TOP 1`) dengan syarat `barcode = WOS` dan salah satu kunci cocok:
+     - **Prioritas:** `tipartnumber` cocok dengan `TERMINALA` / `TERMINALB`.
+     - **Cadangan:** `tiid` cocok dengan `RmiTermA` / `RmiTermB`.
+   - Kalau tidak ada yang cocok: peringatan "WOS Tidak Cocok".
+   - Dari baris yang cocok, diambil sisi terminal (A/B) dan patokan CH, IH, CW, IW, Tension (`cha/iha/cwa/iwa/T1` untuk sisi A, `chb/ihb/cwb/iwb/T2` untuk sisi B).
+   - Dicek duplikat (WOS + noreg + LOT MATERIAL + aplikator pada hari produksi berjalan). Kalau sudah ada, ditolak.
+   - Setelah lolos, tombol **N1** menjadi *Ready*.
 
-Tombol **N1 → N2 → N3** bekerja berurutan (*Locked* → *Ready*):
+Urutan scan wajib berurutan; kalau salah urutan, muncul peringatan "Urutan Salah".
+
+**Tombol N (satu tombol dinamis N1 → N2 → N3):**
 
 | Tahap | Data yang diisi |
 |-------|-----------------|
-| **N1** | CH, IH, N1, pilih sisi terminal (A/B), scan terminal |
-| **N2** | CH, IH |
-| **N3** | CH, IH, NG |
+| **N1** | CH, IH, CW, IW, Tension (dengan acuan patokan) |
+| **N2** | CH, IH, CW, IW |
+| **N3** | CH, IH, CW, IW, lalu konfirmasi NG (`FormConfirmNG`, jumlah NG opsional) |
 
-Data N1 dan N2 ditahan sementara di `CrimpingState`. **Insert ke database baru terjadi setelah N3 disimpan.**
+Data N1 dan N2 ditahan sementara di `CrimpingState`. **Insert ke database baru terjadi setelah N3 dan konfirmasi NG selesai.** Sebelum insert, dicek duplikat sekali lagi.
 
-Setelah insert sukses:
+Setelah insert sukses (`ResetAfterSubmit`):
 
 - WOS dikosongkan dan fokus kembali ke WOS (siap scan berikutnya).
-- Terminal dan Aplikator **tetap**.
-- Status N1/N2/N3 di-reset dan tabel di-refresh.
+- **LOT MATERIAL (beserta Tipartnumber dan Tiid) dan Aplikator tetap**, jadi tidak perlu scan ulang.
+- Hasil N1/N2/N3, patokan, dan sisi terminal di-reset; tombol kembali ke N1 *Locked*; tabel di-refresh.
 
-Kalau insert gagal, N3 kembali *Ready* dan state tetap tersimpan, jadi operator bisa coba lagi.
+Kalau insert gagal, tombol N3 kembali *Ready* dan state tetap tersimpan, jadi operator bisa coba lagi. Kalau konfirmasi NG dibatalkan, hasil N3 dihapus dan N3 bisa diisi ulang.
 
 **Tombol erase** (ikon penghapus di tiap field):
 
 | Erase | Efek |
 |-------|------|
-| Terminal | Reset total: semua field, status N, dan tabel |
-| Aplikator | Reset Aplikator, WOS, status N, dan tabel |
-| WOS | Reset WOS dan status N saja (tabel tetap) |
+| LOT MATERIAL | Reset total (`ResetNState`): semua field, state (termasuk LotMaterial), status N, dan tabel |
+| Aplikator | Reset Aplikator, WOS, hasil N, dan patokan (LOT MATERIAL tetap), tabel dikosongkan |
+| WOS | Reset WOS, hasil N, dan patokan (tabel tetap) |
 
-**Tabel riwayat** menampilkan data `Tr_LhhpWH` berdasarkan `terminal + aplikator + noreg` pada **hari produksi** berjalan. Hari produksi dihitung **06:00 sampai 05:59 hari berikutnya**, jadi sebelum jam 06:00 dianggap masih hari kemarin. Kolom N1/N2/N3 diberi centang (`✓`) kalau datanya sudah lengkap.
+**Tabel riwayat** menampilkan data `TrCrimpingResult` berdasarkan `terminal (LOT MATERIAL) + aplikator + noreg` pada **hari produksi** berjalan. Hari produksi dihitung **06:00 sampai 05:59 hari berikutnya**, jadi sebelum jam 06:00 dianggap masih hari kemarin. Kolom: NO, LOT NUMBER, SKEMA, TERMINAL, APLIKATOR, CH/IH/CW/IW untuk N1–N3, NG, TENSION. LOT NUMBER dan SKEMA diambil dari WOS (dipisah di titik terakhir).
 
-**Sidebar:** profil operator (nama, noreg), menu *Request Terminal*, *Downtime*, *Export*, accordion info Shift & Mesin, dan tombol *Logout* (dengan konfirmasi).
+**Sidebar:** foto/inisial operator, nama dan noreg, menu *Request Terminal*, *Downtime*, *Export*, accordion info Shift & Mesin, dan tombol *Logout* (dengan konfirmasi).
+
+Foto profil dimuat async dari `AvatarBaseUrl + noreg + "." + ext` (timeout 5 detik). Kalau gagal, dipakai inisial.
+
+**Export:** membuka laporan PDF di browser (`laporan-crimping-manual/controllers/export.php?action=export_pdf`) dengan parameter `noreg`, `tanggal` (tanggal produksi dari server), `aplikator`, `terminal` (LOT MATERIAL asli), dan `mesin`. LOT MATERIAL dan Aplikator harus sudah terisi. Lookup tipartnumber dilakukan di sisi laporan (PHP).
 
 ### 4. Request Terminal
 
 1. Scan **WOS** dengan format `LOTNO.SEQNO` (titik terakhir sebagai pemisah, contoh `LOT001.1`).
-2. Sistem mencari di `trrphmesin` dengan `lotno`, `seqnoint`, dan `tanggalhasil IS NULL` (WOS belum selesai).
-3. Data `terminala` dan `terminalb` ditampilkan, lalu operator memilih **Terminal A**, **B**, atau keduanya. Terminal yang datanya kosong tidak bisa dipilih.
-4. Klik OK lalu konfirmasi, dan data disimpan ke `ReqTerminal` (`mesin`, `wos`, `noreg`, `status = 0`, `created_date = GETDATE()`).
+2. Sistem mencari di `trrphmesin` dengan `lotno` dan `seqnoint` (`TOP 1`), lalu mengambil `terminala` dan `terminalb`.
+3. Data terminal A dan B ditampilkan, lalu operator memilih **Terminal A atau Terminal B (hanya salah satu)**. Terminal yang datanya kosong tidak bisa dipilih. Kalau keduanya kosong, ditolak.
+4. Klik OK lalu konfirmasi (SIMPAN / BATAL), dan data disimpan ke `ReqTerminal` (`mesin`, `terminal`, `noreg`, `wos`, `status = 0`, `created_date = GETDATE()`).
+
+Catatan: nilai yang disimpan di kolom `terminal` adalah **isi** terminal yang dipilih (`terminala` / `terminalb`), bukan label "A"/"B".
+
+Setiap scan baru mereset hasil scan dan pilihan sebelumnya. Teks WOS yang diubah setelah scan harus discan ulang sebelum bisa disimpan.
 
 ### 5. Maintenance Call (Downtime)
 
@@ -129,7 +160,7 @@ Alur:
    - **Kategori lain** (DANDORI, PLAN DOWNTIME, MINORSTOP): cukup textbox keterangan.
 4. Klik **SELESAI** → `ActivityLog` di-update (`StatusID = 3`, `TimeFinish`), lalu downtime disimpan ke `TrRPHMesinSetup`.
 
-Footer form hanya punya satu tombol, **SELESAI** (tombol BATAL sudah dihapus). Tombol ini baru aktif setelah validasi noreg/password berhasil (atau langsung aktif untuk Penyedia WIP). Form masih bisa ditutup dengan tombol **Esc** atau tombol X (`DialogResult.Cancel`), tapi tanpa menyimpan apa pun.
+Footer form hanya punya satu tombol, **SELESAI** (aktif setelah validasi noreg/password berhasil, atau langsung untuk Penyedia WIP). Form bisa ditutup dengan **Esc** atau tombol X (`DialogResult.Cancel`), tanpa menyimpan apa pun.
 
 Kategori problem: `PROBLEM MESIN`, `PROBLEM APLIKATOR`, `PROBLEM WIRE SEAL`, `DANDORI`, `PLAN DOWNTIME`, `MINORSTOP`.
 
@@ -154,14 +185,20 @@ Waktu server diambil sekali saat form dibuka, lalu dihitung lewat offset terhada
 | Tabel | Dipakai untuk |
 |-------|---------------|
 | `DB_PEGAWAI` | Lookup nama operator dari `noreg` (Login) |
-| `Tr_LhhpWH` | Hasil N1/N2/N3 (insert dan riwayat) |
+| `dbInventory2..tblFifo` | Lookup `tiid` dari LOT MATERIAL (`tlotid`) |
+| `dbInventory2..tblItem` | Lookup `tipartnumber` dari `tiid` |
+| `MSAplikator` | Validasi kode aplikator |
+| `KUJNAGN.dbo.TrRPHMesin` | Patokan CH/IH/CW/IW/Tension per WOS (`barcode`) dan kecocokan terminal |
+| `TrCrimpingResult` | Hasil N1/N2/N3 (insert, riwayat, cek duplikat) |
 | `trrphmesin` | Cek WOS dan data terminal A/B (Request Terminal) |
 | `ReqTerminal` | Simpan request terminal |
 | `user_MTCSetup` | Validasi Setter / Maintenance (`noreg`, `password`, `MTC`) |
 | `TrRPHMesinSetup` | Simpan downtime (jam tunggu/mulai/selesai, lama, keterangan, MTC) |
 
-**Kolom `Tr_LhhpWH` yang di-insert:**
-`noreg, terminal, lotno, aplikator, Wos, ch_n1, ih_n1, n1, sisi_terminal_a_n1, sisi_terminal_b_n1, ch_n2, ih_n2, ch_n3, ih_n3, ng_n3, shift, kode_mesin`
+**Kolom `TrCrimpingResult` yang di-insert:**
+`noreg, terminal (LOT MATERIAL asli), lotno, aplikator, Wos, ch_n1, ih_n1, cw_n1, iw_n1, tension, ch_n2, ih_n2, cw_n2, iw_n2, ch_n3, ih_n3, cw_n3, iw_n3, ng_n3, shift, kode_mesin, created_at (GETDATE())`
+
+`lotno` diambil dari bagian WOS sebelum titik pertama.
 
 ### MySQL
 
@@ -179,19 +216,19 @@ Waktu server diambil sekali saat form dibuka, lalu dihitung lewat offset terhada
 ```
 ProjectCrimping/
 ├── Login.cs                  # Login (operator, shift, mesin) + sinkron jam server
-├── Dashboard.cs              # Dashboard crimping, state N1/N2/N3, tabel riwayat
-├── FormN1.cs                 # Popup input N1
-├── FormN2.cs                 # Popup input N2
-├── FormN3.cs                 # Popup input N3
-├── FormRequestTerminal.cs    # Request terminal berdasarkan WOS
+├── Dashboard.cs              # Dashboard crimping, state N1/N2/N3, tabel riwayat, export
+├── FormN1.cs                 # Popup input N1 (+ patokan)
+├── FormN2.cs                 # Popup input N2 (+ patokan)
+├── FormN3.cs                 # Popup input N3 (+ patokan)
+├── FormRequestTerminal.cs    # Request terminal berdasarkan WOS (pilih A atau B)
 ├── FormMaintenanceCall.cs    # Panggilan Andon + input downtime
 │
 ├── (diacu oleh kode di atas, tidak ada di berkas ini)
 │   ├── DatabaseHelper / DbProvider
 │   ├── Session
 │   ├── AppThemeLogin, AppThemePopup
-│   ├── RoundedButton, RoundedPanel, InfoAccordion, AvatarCircle, SidebarPanel, TransparentPanel
-│   └── NotifPopup, FormConfirmLogout
+│   ├── RoundedButton, RoundedPanel, InfoAccordion, AvatarCircle, AvatarPicture, SidebarPanel, TransparentPanel
+│   └── NotifPopup, FormConfirmLogout, FormConfirmNG
 ```
 
 ---
@@ -202,23 +239,36 @@ ProjectCrimping/
 2. Pastikan referensi/NuGet terpasang: `Guna.UI2.WinForms`, `MySql.Data`, dan `System.Data.SqlClient`.
 3. Atur connection string SQL Server dan MySQL di `DatabaseHelper` (mode Dev/Prod).
 4. Pastikan font/ikon **Segoe MDL2 Assets** tersedia di PC operator (kalau tidak, dipakai fallback emoji).
-5. Build lalu jalankan. Form awal adalah `Login`.
+5. Pastikan PC operator bisa mengakses server foto profil dan server laporan (lihat konfigurasi di bawah).
+6. Build lalu jalankan. Form awal adalah `Login`.
 
 > Gunakan barcode scanner dalam mode *keyboard wedge* dengan suffix **Enter**, supaya hasil scan langsung memicu validasi.
+
+**Konfigurasi URL (hardcoded di `Dashboard.cs`):**
+
+| Konstanta | Fungsi |
+|-----------|--------|
+| `AvatarBaseUrl` | Lokasi foto profil operator |
+| `baseUrl` (di `ExportPdf`) | Endpoint laporan PDF crimping |
 
 ---
 
 ## Catatan untuk Developer
 
-- Tombol **EXPORT** di sidebar Dashboard sudah ada tapi **belum punya handler**.
+- Ada **tiga nilai** dari LOT MATERIAL, jangan tertukar: `LotMaterial` (disimpan ke DB), `Tipartnumber` (cek terminal + tampilan), `Tiid` (cadangan).
+- Ada **dua jenis reset**: `ResetNState()` menghapus semua termasuk LotMaterial; `ResetAfterSubmit()` mempertahankan LotMaterial + Tipartnumber + Tiid.
+- `ClearPatokanOnly()` sengaja tidak menghapus LotMaterial/Tipartnumber/Tiid.
+- `IsWosDuplicate` mengembalikan `true` saat query error (fail-safe), jadi gangguan koneksi akan menolak WOS, bukan meloloskannya.
+- `CheckAplikator` memakai `LIKE '%kode%'`, jadi kecocokan bersifat parsial.
+- Di `FormRequestTerminal`, komentar kode menyebut `tanggalhasil IS NULL`, tetapi query saat ini **tidak** memfilter kolom itu. Sesuaikan komentar atau tambahkan filter jika memang dibutuhkan.
 - Tombol **BATAL** di Maintenance Call sudah dihapus, tapi menutup form lewat **Esc** / X tetap tidak meng-update `ActivityLog` yang masih berstatus 1/2, jadi record bisa menggantung (masih ada TODO di kode).
-- Di footer `FormMaintenanceCall`, `btnFinish` ditambahkan dua kali ke `actions` (`Add(btnFinish, 0, 0)` lalu `Add(btnFinish, 1, 0)`), padahal `actions` sekarang hanya 1 kolom. Sebaiknya hapus baris kedua beserta sisa baris komentar `btnCancel` supaya layout footer tidak bergeser.
+- Di footer `FormMaintenanceCall`, `btnFinish` ditambahkan dua kali ke `actions` (`Add(btnFinish, 0, 0)` lalu `Add(btnFinish, 1, 0)`), padahal `actions` sekarang hanya 1 kolom. Sebaiknya hapus baris kedua beserta sisa komentar `btnCancel`.
 - Query jam di `Login` mengasumsikan server SQL sudah di zona waktu WIB. Kalau server di UTC, ganti ke `SELECT DATEADD(HOUR, 7, GETDATE());`.
 - `Dashboard` dan `FormMaintenanceCall` memanggil method `downtime_save` pada form induk lewat reflection kalau ada.
-- Di `Dashboard`, `Session.ShiftDisplay` dan `Session.MesinDisplay` dipakai di accordion Shift & Mesin.
+- URL avatar dan laporan masih hardcoded; pertimbangkan memindahkannya ke konfigurasi.
 
 ---
 
 ## Versi
 
-Ver **2.1**
+Ver **2.2**

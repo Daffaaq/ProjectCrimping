@@ -36,6 +36,8 @@ namespace ProjectCrimping
     ///  4. Tekan N1 → N2 → N3 (1 tombol)       → tiap tombol membuka form input ukuran.
     ///                                            Setelah N3 + konfirmasi NG, data di-INSERT
     ///                                            ke TrCrimpingResult dan tombol kembali ke N1.
+    ///                                            SETELAH INSERT SUKSES, Output Daily di header
+    ///                                            diperbarui (SUM QtyLot dari TrRPHMesin).
     ///  5. Fokus kembali ke WOS                → operator bisa scan WOS berikutnya TANPA
     ///                                            scan ulang LOT MATERIAL/Aplikator, karena
     ///                                            ResetAfterSubmit() mempertahankan
@@ -47,7 +49,7 @@ namespace ProjectCrimping
     ///  Form
     ///   ├─ Sidebar (kiri, 270 px, Dock.Left)  : profil, menu, logout
     ///   └─ Konten (Dock.Fill, TableLayoutPanel 1 kolom x 5 baris)
-    ///        ├─ Baris 0 (AutoSize)   : Header judul
+    ///        ├─ Baris 0 (AutoSize)   : Header judul + Output Daily & Durasi
     ///        ├─ Baris 1 (156 px)     : Card 1 — LOT MATERIAL + APLIKATOR
     ///        ├─ Baris 2 (120 px)     : Card 2 — WOS
     ///        ├─ Baris 3 (52 px)      : Tombol dinamis N1/N2/N3
@@ -76,6 +78,11 @@ namespace ProjectCrimping
     ///        - tiid         → dicek ke RmiTermA  / RmiTermB    (CADANGAN)
     ///    Cuma SATU panggilan CheckTerminal di txtWos.KeyDown.
     ///    TOP 1 di SQL → ambil satu baris terbaik saja (antisipasi data dobel).
+    ///  - OUTPUT DAILY = SUM(QtyLot) dari TrRPHMesin (join lewat barcode = Wos)
+    ///    untuk semua baris TrCrimpingResult hari produksi ini milik
+    ///    operator + terminal + aplikator yang sedang aktif.
+    ///    Hanya diperbarui lewat UpdateOutputDaily(), yang dipanggil dari
+    ///    RefreshTable() SETELAH insert sukses (bukan dari LoadDataCrimping).
     /// </summary>
     public partial class Dashboard : Form
     {
@@ -134,6 +141,16 @@ namespace ProjectCrimping
 
         private AvatarPicture _avatarPic;
 
+        // Label untuk Header Output Daily & Durasi
+        private Label lblOutputDaily;
+        private Label lblDurasi;
+
+        // Durasi: hitung detik sejak N1 diklik sampai data tersimpan.
+        // Stopwatch dipakai supaya akurat (tidak bergantung ketepatan Timer),
+        // Timer cuma buat refresh label.
+        private readonly Timer _durasiTimer = new Timer { Interval = 500 };
+        private readonly Stopwatch _durasiWatch = new Stopwatch();
+
         // ================================================================
         //  STATE & DEPENDENCY
         // ================================================================
@@ -150,6 +167,8 @@ namespace ProjectCrimping
             MinimumSize = new Size(1100, 700);
             DoubleBuffered = true;
             BuildUI();
+
+            _durasiTimer.Tick += (s, e) => UpdateDurasiLabel();
         }
 
         protected override async void OnShown(EventArgs e)
@@ -171,6 +190,8 @@ namespace ProjectCrimping
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             base.OnFormClosed(e);
+            _durasiTimer.Stop();
+            _durasiTimer.Dispose();
             if (!_isLoggingOut)
                 Application.Exit();
         }
@@ -561,9 +582,27 @@ namespace ProjectCrimping
             return main;
         }
 
+        // =====================================================
+        //  HEADER (JUDUL + OUTPUT DAILY & DURASI)
+        // =====================================================
         private Control BuildHeader()
         {
-            var flow = new FlowLayoutPanel
+            // Panel utama header, pakai TableLayoutPanel 2 kolom (Kiri: Judul, Kanan: Info)
+            var header = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = PageBg,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(0, 0, 0, 10),
+                AutoSize = true
+            };
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); // Kiri (Judul)
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));    // Kanan (Info)
+            header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            // --- KOLOM KIRI: JUDUL ---
+            var flowLeft = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 FlowDirection = FlowDirection.TopDown,
@@ -571,9 +610,9 @@ namespace ProjectCrimping
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 BackColor = PageBg,
-                Margin = new Padding(0, 0, 0, 10)
+                Margin = Padding.Empty
             };
-            flow.Controls.Add(new Label
+            flowLeft.Controls.Add(new Label
             {
                 Text = "Shopfloor Crimping",
                 AutoSize = true,
@@ -582,7 +621,7 @@ namespace ProjectCrimping
                 Font = new Font("Segoe UI", 20f, FontStyle.Bold),
                 BackColor = PageBg
             });
-            flow.Controls.Add(new Label
+            flowLeft.Controls.Add(new Label
             {
                 Text = "Input data crimping",
                 AutoSize = true,
@@ -591,13 +630,78 @@ namespace ProjectCrimping
                 Font = new Font("Segoe UI", 10f),
                 BackColor = PageBg
             });
-            flow.Controls.Add(new Panel
+            flowLeft.Controls.Add(new Panel
             {
                 Size = new Size(48, 4),
                 BackColor = Accent,
                 Margin = new Padding(3, 10, 0, 0)
             });
-            return flow;
+            header.Controls.Add(flowLeft, 0, 0);
+
+            // --- KOLOM KANAN: OUTPUT DAILY & DURASI (BADGE ORANGE) ---
+            var flowRight = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = PageBg,
+                Margin = new Padding(0, 44, 0, 0), // Sejajar dengan judul/subtitle
+                Anchor = AnchorStyles.Right | AnchorStyles.Top
+            };
+
+            // ========================================================
+            // BADGE: OUTPUT DAILY (Theme Orange)
+            // ========================================================
+            var badgeOutput = new RoundedPanel
+            {
+                Radius = 12,
+                FillColor = AccentSoft, // Background orange soft
+                BorderColor = Accent,   // Border orange tebal
+                Size = new Size(150, 34),
+                Margin = new Padding(0, 0, 8, 0)
+            };
+
+            lblOutputDaily = new Label
+            {
+                Text = "Output Daily: 0",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Navy, // Teks warna navy biar kontras
+                Font = new Font("Segoe UI Semibold", 10f),
+                BackColor = Color.Transparent
+            };
+            badgeOutput.Controls.Add(lblOutputDaily);
+            flowRight.Controls.Add(badgeOutput);
+
+            // ========================================================
+            // BADGE: DURASI (Theme Orange)
+            // ========================================================
+            var badgeDurasi = new RoundedPanel
+            {
+                Radius = 12,
+                FillColor = AccentSoft,
+                BorderColor = Accent,
+                Size = new Size(110, 34),
+                Margin = new Padding(0)
+            };
+
+            lblDurasi = new Label
+            {
+                Text = "Durasi: 0",
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Navy,
+                Font = new Font("Segoe UI Semibold", 10f),
+                BackColor = Color.Transparent
+            };
+            badgeDurasi.Controls.Add(lblDurasi);
+            flowRight.Controls.Add(badgeDurasi);
+
+            header.Controls.Add(flowRight, 1, 0);
+
+            return header;
         }
 
         // =====================================================
@@ -850,6 +954,10 @@ namespace ProjectCrimping
                     _state.LotMaterial,
                     kodeAplikator,
                     Session.Noreg);
+
+                // Terminal + Aplikator sudah valid → langsung hitung Output Daily
+                // (SUM QtyLot dari TrCrimpingResult hari produksi ini)
+                UpdateOutputDaily();
             };
 
             // ===== ERASE LOT MATERIAL → reset total =====
@@ -858,6 +966,11 @@ namespace ProjectCrimping
                 txtTerminal.Clear();
                 txtAplikator.Clear();
                 txtWos.Clear();
+
+                // --- RESET ANGKA HEADER ---
+                if (lblOutputDaily != null) lblOutputDaily.Text = "Output Daily: 0";
+                if (lblDurasi != null) lblDurasi.Text = "Durasi: 0";
+                // --------------------------
 
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, false);
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, true);
@@ -881,6 +994,9 @@ namespace ProjectCrimping
 
                 txtAplikator.Clear();
                 txtWos.Clear();
+
+                // --- RESET ANGKA OUTPUT DAILY (ganti aplikator = hitungan baru) ---
+                if (lblOutputDaily != null) lblOutputDaily.Text = "Output Daily: 0";
 
                 LockField(fieldAplikator, txtAplikator, eraseAplikator, false);
                 LockField(fieldWos, txtWos, eraseWos, true);
@@ -1114,6 +1230,7 @@ namespace ProjectCrimping
                 switch (_nStep)
                 {
                     case 1:
+                        StartDurasi();   // ← durasi mulai hitung dari klik N1
                         using (var f = new FormN1(
                             _state.PatokanCH,
                             _state.PatokanIH,
@@ -1121,7 +1238,11 @@ namespace ProjectCrimping
                             _state.PatokanIW,
                             _state.PatokanTension))
                         {
-                            if (f.ShowDialog(this) != DialogResult.OK) return;
+                            if (f.ShowDialog(this) != DialogResult.OK)
+                            {
+                                ResetDurasi();   // N1 dibatalkan → siklus belum dimulai
+                                return;
+                            }
 
                             _state.N1_CH = f.CH;
                             _state.N1_IH = f.IH;
@@ -1222,6 +1343,7 @@ namespace ProjectCrimping
                 txtWos.SelectAll();
             }));
 
+            // INSERT sudah sukses → refresh tabel + Output Daily (SUM QtyLot)
             RefreshTable();
         }
 
@@ -1567,6 +1689,7 @@ SELECT CASE
         private void ResetNState()
         {
             _state.ClearAll();
+            ResetDurasi();
             _nStep = 1;
             SetNButtonState(NState.Locked);
         }
@@ -1578,8 +1701,41 @@ SELECT CASE
             _state.ClearN3();
             _state.ClearPatokanOnly();
 
+            // Dipanggil setelah INSERT sukses (SubmitN3) dan saat erase WOS/Aplikator
+            // → durasi berhenti dan kembali ke 0.
+            ResetDurasi();
+
             _nStep = 1;
             SetNButtonState(NState.Locked);
+        }
+
+        // =====================================================
+        //  DURASI (stopwatch di header)
+        //  Mulai : klik N1
+        //  Reset : data berhasil tersimpan (ResetAfterSubmit),
+        //          erase WOS / Aplikator / LOT MATERIAL, atau N1 dibatalkan.
+        //  Satuan: detik (0, 1, 2, ...)
+        // =====================================================
+        private void StartDurasi()
+        {
+            if (_durasiWatch.IsRunning) return;   // sudah jalan, jangan restart
+
+            _durasiWatch.Restart();
+            _durasiTimer.Start();
+            UpdateDurasiLabel();
+        }
+
+        private void ResetDurasi()
+        {
+            _durasiTimer.Stop();
+            _durasiWatch.Reset();
+            if (lblDurasi != null) lblDurasi.Text = "Durasi: 0";
+        }
+
+        private void UpdateDurasiLabel()
+        {
+            if (lblDurasi == null) return;
+            lblDurasi.Text = $"Durasi: {(int)_durasiWatch.Elapsed.TotalSeconds}";
         }
 
         private void ClearTable()
@@ -1591,6 +1747,9 @@ SELECT CASE
         //  QUERY: LoadDataCrimping
         //
         //  Parameter `terminal` = LOT MATERIAL asli (bukan tipartnumber).
+        //
+        //  CATATAN: method ini HANYA mengisi tabel riwayat.
+        //  Output Daily TIDAK diubah di sini — lihat UpdateOutputDaily().
         // =====================================================
         private void LoadDataCrimping(string terminal, string aplikator, string noreg)
         {
@@ -1607,7 +1766,7 @@ DECLARE @tanggalProduksi DATE =
         ELSE
             CAST(GETDATE() AS DATE)
     END;
-
+ 
 SELECT 
     Wos,
     terminal,
@@ -1709,12 +1868,87 @@ ORDER BY created_at DESC;";
             }
         }
 
+        // =====================================================
+        //  REFRESH SETELAH INSERT SUKSES
+        //  Dipanggil HANYA dari SubmitN3() setelah InsertLhhpWH() berhasil.
+        // =====================================================
         private void RefreshTable()
         {
             LoadDataCrimping(
                 _state.LotMaterial,              // ← LOT MATERIAL ASLI
                 txtAplikator.Text.Trim(),
                 Session.Noreg);
+
+            UpdateOutputDaily();                 // ← baru: Output Daily = SUM(QtyLot)
+        }
+
+        // =====================================================
+        //  QUERY: Output Daily = SUM(QtyLot)
+        //
+        //  Dihitung dari semua baris TrCrimpingResult hari produksi ini
+        //  (06:00 s/d 06:00) milik operator + terminal (LOT MATERIAL asli)
+        //  + aplikator yang sedang aktif.
+        //
+        //  QtyLot diambil dari TrRPHMesin lewat barcode = Wos.
+        //  OUTER APPLY + TOP 1 → kalau barcode dobel di TrRPHMesin,
+        //  QtyLot tidak terhitung berkali-kali. Urutan TOP 1 pakai
+        //  KodeRPHMeisn DESC (sama dengan CheckTerminal).
+        // =====================================================
+        private void UpdateOutputDaily()
+        {
+            if (lblOutputDaily == null) return;
+
+            string terminal = _state.LotMaterial;
+            string aplikator = txtAplikator.Text.Trim();
+            string noreg = Session.Noreg;
+
+            if (string.IsNullOrEmpty(terminal) ||
+                string.IsNullOrEmpty(aplikator) ||
+                string.IsNullOrEmpty(noreg))
+                return;
+
+            const string sql = @"
+DECLARE @tanggalProduksi DATE =
+    CASE
+        WHEN DATEPART(HOUR, GETDATE()) < 6
+            THEN CAST(DATEADD(DAY, -1, GETDATE()) AS DATE)
+        ELSE CAST(GETDATE() AS DATE)
+    END;
+
+SELECT ISNULL(SUM(q.QtyLot), 0)
+FROM TrCrimpingResult r
+OUTER APPLY (
+    SELECT TOP 1 m.QtyLot
+    FROM [ASSY].[dbo].[TrRPHMesin] m
+    WHERE m.barcode = r.Wos
+    ORDER BY m.KodeRPHMeisn DESC
+) q
+WHERE r.terminal  = @terminal
+  AND r.aplikator = @aplikator
+  AND r.noreg     = @noreg
+  AND r.created_at >= DATEADD(HOUR, 6,  CAST(@tanggalProduksi AS DATETIME))
+  AND r.created_at <  DATEADD(HOUR, 30, CAST(@tanggalProduksi AS DATETIME));";
+
+            try
+            {
+                using (var conn = _db.Open())
+                using (var cmd = new SqlCommand(sql, (SqlConnection)conn))
+                {
+                    cmd.Parameters.AddWithValue("@terminal", terminal);
+                    cmd.Parameters.AddWithValue("@aplikator", aplikator);
+                    cmd.Parameters.AddWithValue("@noreg", noreg);
+
+                    object result = cmd.ExecuteScalar();
+                    decimal total = ReadDecimal(result) ?? 0m;
+                    lblOutputDaily.Text = $"Output Daily: {total:N0}";
+                }
+            }
+            catch (Exception ex)
+            {
+                ShowFriendlyError("Output Daily Tidak Bisa Dihitung",
+                    "Aplikasi belum bisa menghitung Output Daily.\nPeriksa koneksi jaringan lalu coba lagi.",
+                    ex, "UpdateOutputDaily");
+            }
         }
 
         // =====================================================
@@ -1891,7 +2125,7 @@ SELECT TOP 1
        KodeMesin, TERMINALA, TERMINALB, RmiTermA, RmiTermB,
        cha, iha, cwa, iwa, T1,
        chb, ihb, cwb, iwb, T2
-FROM [KUJNAGN].[dbo].[TrRPHMesin]
+FROM [ASSY].[dbo].[TrRPHMesin]
 WHERE (
         (@tipartnumber IS NOT NULL AND (TERMINALA = @tipartnumber OR TERMINALB = @tipartnumber))
      OR (@tiid IS NOT NULL AND (RmiTermA = @tiid OR RmiTermB = @tiid))
@@ -2025,7 +2259,7 @@ DECLARE @tanggalProduksi DATE =
         ELSE
             CAST(GETDATE() AS DATE)
     END;
-
+ 
 SELECT COUNT(*)
 FROM TrCrimpingResult
 WHERE Wos = @wos
