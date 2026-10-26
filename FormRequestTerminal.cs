@@ -284,9 +284,9 @@ namespace ProjectCrimping
                         {
                             if (!reader.Read())
                             {
-                                // Tidak ketemu atau sudah selesai
+                                // Tidak ketemu
                                 SetStatus(
-                                    "WOS ga ketemu / udah selesai",
+                                    "data Terminal tidak ditemukan silahkan check ulang WOS",
                                     false
                                 );
 

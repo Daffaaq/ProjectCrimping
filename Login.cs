@@ -23,6 +23,10 @@ namespace ProjectCrimping
     /// Validasi dilakukan dua lapis:
     ///   - Validasi FORMAT di sisi client (cepat, tanpa hit DB)
     ///   - Validasi DATA di sisi server (query DB untuk cek exist/valid)
+    ///
+    /// Validasi KOSONG:
+    ///   - Tekan Enter di field kosong (Operator / Mesin) → pesan "wajib diisi" muncul.
+    ///   - Klik LOGIN dengan field kosong → pesan "wajib diisi" muncul (BtnLogin_Click).
     /// </summary>
     public partial class Login : Form
     {
@@ -359,11 +363,25 @@ namespace ProjectCrimping
         //
         //  Hasil disimpan di field _lastOperator* supaya tidak query ulang
         //  saat BtnLogin_Click().
+        //
+        //  Field kosong → tampilkan error "wajib diisi" (bukan diam saja).
         // ================================================================
         private async Task LookupOperatorAsync()
         {
             string raw = txtNoRegOperator.Text.Trim();
-            if (string.IsNullOrEmpty(raw)) return;
+
+            // ===== VALIDASI KOSONG =====
+            if (string.IsNullOrEmpty(raw))
+            {
+                AppThemeLogin.ClearHintChip(lblHintOperator);
+                AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
+                    "No Reg Operator wajib diisi");
+
+                _lastOperatorNoreg = null;
+                _lastOperatorNama = null;
+                _lastOperatorExt = null;
+                return;
+            }
 
             string noreg = ExtractNoreg(raw);
 
@@ -383,14 +401,16 @@ namespace ProjectCrimping
             {
                 string nama = null;
                 string ext = null;
+                bool found = false;        // ada row di DB_PEGAWAI (terlepas dari resign)
+                bool sudahResign = false;  // tgl_resign terisi
 
                 await Task.Run(() =>
                 {
                     using (var conn = _db.Open())
                     using (var cmd = new SqlCommand(
-                        @"SELECT TOP 1 nama, ext 
-                          FROM DB_PEGAWAI 
-                          WHERE noreg = @noreg",
+                        @"SELECT TOP 1 nama, ext, tgl_resign 
+                  FROM DB_PEGAWAI 
+                  WHERE noreg = @noreg",
                         (SqlConnection)conn))
                     {
                         cmd.CommandTimeout = 10;
@@ -400,14 +420,23 @@ namespace ProjectCrimping
                         {
                             if (reader.Read())
                             {
-                                nama = reader["nama"] as string;
-                                ext = reader["ext"] as string;
+                                found = true;
+
+                                object tglResign = reader["tgl_resign"];
+                                sudahResign = tglResign != null && tglResign != DBNull.Value;
+
+                                if (!sudahResign)
+                                {
+                                    nama = reader["nama"] as string;
+                                    ext = reader["ext"] as string;
+                                }
                             }
                         }
                     }
                 });
 
-                if (string.IsNullOrEmpty(nama))
+                // ===== TIDAK ADA DI DB_PEGAWAI =====
+                if (!found || (string.IsNullOrEmpty(nama) && !sudahResign))
                 {
                     AppThemeLogin.ClearHintChip(lblHintOperator);
                     AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
@@ -416,17 +445,29 @@ namespace ProjectCrimping
                     _lastOperatorNoreg = null;
                     _lastOperatorNama = null;
                     _lastOperatorExt = null;
+                    return;
                 }
-                else
-                {
-                    AppThemeLogin.ClearFieldError(pnlFieldOperator, lblErrOperator);
-                    AppThemeLogin.SetHintChip(lblHintOperator, nama);
 
-                    // Simpan untuk dipakai BtnLogin_Click()
-                    _lastOperatorNoreg = noreg;
-                    _lastOperatorNama = nama;
-                    _lastOperatorExt = ext;   // boleh null kalau kolom ext kosong
+                // ===== SUDAH RESIGN =====
+                if (sudahResign)
+                {
+                    AppThemeLogin.ClearHintChip(lblHintOperator);
+                    AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
+                        "Operator sudah resign / tidak aktif");
+
+                    _lastOperatorNoreg = null;
+                    _lastOperatorNama = null;
+                    _lastOperatorExt = null;
+                    return;
                 }
+
+                // ===== VALID =====
+                AppThemeLogin.ClearFieldError(pnlFieldOperator, lblErrOperator);
+                AppThemeLogin.SetHintChip(lblHintOperator, nama);
+
+                _lastOperatorNoreg = noreg;
+                _lastOperatorNama = nama;
+                _lastOperatorExt = ext;
             }
             catch (Exception ex)
             {
@@ -439,18 +480,27 @@ namespace ProjectCrimping
                 _lastOperatorExt = null;
             }
         }
-
         // ================================================================
         //  LOOKUP MESIN
         //
         //  PERBAIKAN BUG: Menyimpan `_lastMesinRaw` dalam format standar
         //  (CRP<No>-<Area>) supaya konsisten meskipun operator mengetik
         //  dengan huruf kecil.
+        //
+        //  Field kosong → tampilkan error "wajib diisi" (bukan diam saja).
         // ================================================================
         private async Task LookupMesinAsync()
         {
             string raw = txtMesin.Text.Trim();
-            if (string.IsNullOrEmpty(raw)) return;
+
+            // ===== VALIDASI KOSONG =====
+            if (string.IsNullOrEmpty(raw))
+            {
+                AppThemeLogin.ClearHintChip(lblHintMesin);
+                AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin,
+                    "Mesin wajib diisi");
+                return;
+            }
 
             var parsed = ExtractMesin(raw);
 
@@ -708,7 +758,7 @@ namespace ProjectCrimping
                 Session.Shift = int.TryParse(shiftValue, out int sh) ? sh : 0;
                 Session.IsLoggedIn = true;
 
-                Session.mesin = _lastMesinRaw;
+                Session.mesin = _lastMesinRaw;    // ← selalu format kapital: CRP15-R2
                 Session.MesinName = _lastMchName;
                 Session.MesinArea = _lastMchArea;
                 Session.MesinNo = _lastMchNo;

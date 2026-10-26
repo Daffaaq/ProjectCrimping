@@ -29,7 +29,7 @@ namespace ProjectCrimping
     ///                                         → validasi format; lalu cari patokan
     ///                                            di TrRPHMesin dengan DUA kunci:
     ///                                              - tipartnumber di TERMINALA/TERMINALB (PRIORITAS)
-    ///                                              - tiid          di RmiTermA/RmiTermB  (CADANGAN)
+    ///                                              - tiid          di RmiTermA/RmiTermB (CADANGAN)
     ///                                            Syarat kedua selalu: barcode = WOS.
     ///                                            Ambil TOP 1 (kalau data dobel, ambil 1 saja).
     ///                                            Tombol N1 aktif setelah WOS valid.
@@ -49,7 +49,7 @@ namespace ProjectCrimping
     ///  Form
     ///   ├─ Sidebar (kiri, 270 px, Dock.Left)  : profil, menu, logout
     ///   └─ Konten (Dock.Fill, TableLayoutPanel 1 kolom x 5 baris)
-    ///        ├─ Baris 0 (AutoSize)   : Header judul + Output Daily & Durasi
+    ///        ├─ Baris 0 (AutoSize)   : Header judul + Output Daily
     ///        ├─ Baris 1 (156 px)     : Card 1 — LOT MATERIAL + APLIKATOR
     ///        ├─ Baris 2 (120 px)     : Card 2 — WOS
     ///        ├─ Baris 3 (52 px)      : Tombol dinamis N1/N2/N3
@@ -141,15 +141,8 @@ namespace ProjectCrimping
 
         private AvatarPicture _avatarPic;
 
-        // Label untuk Header Output Daily & Durasi
+        // Label untuk Header Output Daily
         private Label lblOutputDaily;
-        private Label lblDurasi;
-
-        // Durasi: hitung detik sejak N1 diklik sampai data tersimpan.
-        // Stopwatch dipakai supaya akurat (tidak bergantung ketepatan Timer),
-        // Timer cuma buat refresh label.
-        private readonly Timer _durasiTimer = new Timer { Interval = 500 };
-        private readonly Stopwatch _durasiWatch = new Stopwatch();
 
         // ================================================================
         //  STATE & DEPENDENCY
@@ -167,8 +160,6 @@ namespace ProjectCrimping
             MinimumSize = new Size(1100, 700);
             DoubleBuffered = true;
             BuildUI();
-
-            _durasiTimer.Tick += (s, e) => UpdateDurasiLabel();
         }
 
         protected override async void OnShown(EventArgs e)
@@ -190,8 +181,6 @@ namespace ProjectCrimping
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             base.OnFormClosed(e);
-            _durasiTimer.Stop();
-            _durasiTimer.Dispose();
             if (!_isLoggingOut)
                 Application.Exit();
         }
@@ -583,7 +572,7 @@ namespace ProjectCrimping
         }
 
         // =====================================================
-        //  HEADER (JUDUL + OUTPUT DAILY & DURASI)
+        //  HEADER (JUDUL + OUTPUT DAILY)
         // =====================================================
         private Control BuildHeader()
         {
@@ -638,7 +627,7 @@ namespace ProjectCrimping
             });
             header.Controls.Add(flowLeft, 0, 0);
 
-            // --- KOLOM KANAN: OUTPUT DAILY & DURASI (BADGE ORANGE) ---
+            // --- KOLOM KANAN: OUTPUT DAILY (BADGE ORANGE) ---
             var flowRight = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -660,7 +649,7 @@ namespace ProjectCrimping
                 FillColor = AccentSoft, // Background orange soft
                 BorderColor = Accent,   // Border orange tebal
                 Size = new Size(150, 34),
-                Margin = new Padding(0, 0, 8, 0)
+                Margin = new Padding(0)
             };
 
             lblOutputDaily = new Label
@@ -674,30 +663,6 @@ namespace ProjectCrimping
             };
             badgeOutput.Controls.Add(lblOutputDaily);
             flowRight.Controls.Add(badgeOutput);
-
-            // ========================================================
-            // BADGE: DURASI (Theme Orange)
-            // ========================================================
-            var badgeDurasi = new RoundedPanel
-            {
-                Radius = 12,
-                FillColor = AccentSoft,
-                BorderColor = Accent,
-                Size = new Size(110, 34),
-                Margin = new Padding(0)
-            };
-
-            lblDurasi = new Label
-            {
-                Text = "Durasi: 0",
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                ForeColor = Navy,
-                Font = new Font("Segoe UI Semibold", 10f),
-                BackColor = Color.Transparent
-            };
-            badgeDurasi.Controls.Add(lblDurasi);
-            flowRight.Controls.Add(badgeDurasi);
 
             header.Controls.Add(flowRight, 1, 0);
 
@@ -969,7 +934,6 @@ namespace ProjectCrimping
 
                 // --- RESET ANGKA HEADER ---
                 if (lblOutputDaily != null) lblOutputDaily.Text = "Output Daily: 0";
-                if (lblDurasi != null) lblDurasi.Text = "Durasi: 0";
                 // --------------------------
 
                 LockField(fieldTerminal, txtTerminal, eraseTerminal, false);
@@ -1230,7 +1194,6 @@ namespace ProjectCrimping
                 switch (_nStep)
                 {
                     case 1:
-                        StartDurasi();   // ← durasi mulai hitung dari klik N1
                         using (var f = new FormN1(
                             _state.PatokanCH,
                             _state.PatokanIH,
@@ -1239,10 +1202,7 @@ namespace ProjectCrimping
                             _state.PatokanTension))
                         {
                             if (f.ShowDialog(this) != DialogResult.OK)
-                            {
-                                ResetDurasi();   // N1 dibatalkan → siklus belum dimulai
                                 return;
-                            }
 
                             _state.N1_CH = f.CH;
                             _state.N1_IH = f.IH;
@@ -1689,7 +1649,6 @@ SELECT CASE
         private void ResetNState()
         {
             _state.ClearAll();
-            ResetDurasi();
             _nStep = 1;
             SetNButtonState(NState.Locked);
         }
@@ -1701,41 +1660,8 @@ SELECT CASE
             _state.ClearN3();
             _state.ClearPatokanOnly();
 
-            // Dipanggil setelah INSERT sukses (SubmitN3) dan saat erase WOS/Aplikator
-            // → durasi berhenti dan kembali ke 0.
-            ResetDurasi();
-
             _nStep = 1;
             SetNButtonState(NState.Locked);
-        }
-
-        // =====================================================
-        //  DURASI (stopwatch di header)
-        //  Mulai : klik N1
-        //  Reset : data berhasil tersimpan (ResetAfterSubmit),
-        //          erase WOS / Aplikator / LOT MATERIAL, atau N1 dibatalkan.
-        //  Satuan: detik (0, 1, 2, ...)
-        // =====================================================
-        private void StartDurasi()
-        {
-            if (_durasiWatch.IsRunning) return;   // sudah jalan, jangan restart
-
-            _durasiWatch.Restart();
-            _durasiTimer.Start();
-            UpdateDurasiLabel();
-        }
-
-        private void ResetDurasi()
-        {
-            _durasiTimer.Stop();
-            _durasiWatch.Reset();
-            if (lblDurasi != null) lblDurasi.Text = "Durasi: 0";
-        }
-
-        private void UpdateDurasiLabel()
-        {
-            if (lblDurasi == null) return;
-            lblDurasi.Text = $"Durasi: {(int)_durasiWatch.Elapsed.TotalSeconds}";
         }
 
         private void ClearTable()
@@ -1879,7 +1805,7 @@ ORDER BY created_at DESC;";
                 txtAplikator.Text.Trim(),
                 Session.Noreg);
 
-            UpdateOutputDaily();                 // ← baru: Output Daily = SUM(QtyLot)
+            UpdateOutputDaily();                 // ← Output Daily = SUM(QtyLot)
         }
 
         // =====================================================
