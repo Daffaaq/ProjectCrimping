@@ -6,7 +6,6 @@ using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Guna.UI2.WinForms;
 using MySql.Data.MySqlClient;
 
 namespace ProjectCrimping
@@ -24,9 +23,8 @@ namespace ProjectCrimping
     ///   - Validasi FORMAT di sisi client (cepat, tanpa hit DB)
     ///   - Validasi DATA di sisi server (query DB untuk cek exist/valid)
     ///
-    /// Validasi KOSONG:
-    ///   - Tekan Enter di field kosong (Operator / Mesin) → pesan "wajib diisi" muncul.
-    ///   - Klik LOGIN dengan field kosong → pesan "wajib diisi" muncul (BtnLogin_Click).
+    /// Status "sudah tervalidasi" ditentukan dari CACHE (_lastOperatorNoreg /
+    /// _lastMesinRaw), bukan dari visibilitas label di UI.
     /// </summary>
     public partial class Login : Form
     {
@@ -46,7 +44,10 @@ namespace ProjectCrimping
 
         private bool _busy;
 
+        // Koneksi: dibuat sekali, dipakai ulang oleh semua lookup.
         private readonly DatabaseHelper _db = new DatabaseHelper();
+        private readonly DatabaseHelper _dbMy = new DatabaseHelper(DbProvider.MySql);
+        private readonly DatabaseHelper _dbSync = new DatabaseHelper(DbProvider.SqlServer);
 
         // ================================================================
         //  SINKRONISASI JAM DENGAN SQL SERVER
@@ -58,8 +59,6 @@ namespace ProjectCrimping
         private const int ResyncIntervalMs = 5 * 60 * 1000;
         private int _msSinceLastSync = 0;
 
-        private readonly DatabaseHelper _dbSync = new DatabaseHelper(DbProvider.SqlServer);
-
         // ================================================================
         //  CACHE HASIL VALIDASI MESIN
         // ================================================================
@@ -70,12 +69,21 @@ namespace ProjectCrimping
 
         // ================================================================
         //  CACHE HASIL VALIDASI OPERATOR
-        //  Dipakai saat login supaya tidak query ulang, dan untuk
-        //  mengisi Session.ext (extension foto profil) di Dashboard.
         // ================================================================
         private string _lastOperatorNoreg = null;
         private string _lastOperatorNama = null;
         private string _lastOperatorExt = null;
+
+        // ================================================================
+        //  PENANDA LOOKUP YANG SEDANG BERJALAN (anti query dobel)
+        // ================================================================
+        private Task _operatorLookupTask;
+        private string _operatorLookupRaw;
+        private Task _mesinLookupTask;
+        private string _mesinLookupRaw;
+
+        // Logo di-load ke memori (tidak mengunci file), di-dispose saat form ditutup.
+        private Image _logoImage;
 
         public Login()
         {
@@ -140,11 +148,7 @@ namespace ProjectCrimping
             {
                 AppThemeLogin.ClearFieldError(pnlFieldOperator, lblErrOperator);
                 AppThemeLogin.ClearHintChip(lblHintOperator);
-
-                // Reset cache operator — kalau text berubah, data lama invalid
-                _lastOperatorNoreg = null;
-                _lastOperatorNama = null;
-                _lastOperatorExt = null;
+                ClearOperatorCache();
             };
 
             txtNoRegOperator.KeyDown += async (s, e) =>
@@ -154,7 +158,7 @@ namespace ProjectCrimping
                     e.SuppressKeyPress = true;
                     await LookupOperatorAsync();
 
-                    if (lblHintOperator.Visible)
+                    if (_lastOperatorNoreg != null)
                         cmbShift.Focus();
                 }
             };
@@ -162,7 +166,7 @@ namespace ProjectCrimping
             txtNoRegOperator.Leave += async (s, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(txtNoRegOperator.Text) &&
-                    !lblHintOperator.Visible)
+                    _lastOperatorNoreg == null)
                 {
                     await LookupOperatorAsync();
                 }
@@ -186,11 +190,7 @@ namespace ProjectCrimping
             {
                 AppThemeLogin.ClearFieldError(pnlFieldMesin, lblErrMesin);
                 AppThemeLogin.ClearHintChip(lblHintMesin);
-
-                _lastMesinRaw = null;
-                _lastMchName = null;
-                _lastMchArea = null;
-                _lastMchNo = null;
+                ClearMesinCache();
             };
 
             txtMesin.KeyDown += async (s, e) =>
@@ -200,7 +200,7 @@ namespace ProjectCrimping
                     e.SuppressKeyPress = true;
                     await LookupMesinAsync();
 
-                    if (lblHintMesin.Visible)
+                    if (_lastMesinRaw != null)
                         await BtnLogin_Click();
                 }
             };
@@ -208,7 +208,7 @@ namespace ProjectCrimping
             txtMesin.Leave += async (s, e) =>
             {
                 if (!string.IsNullOrWhiteSpace(txtMesin.Text) &&
-                    !lblHintMesin.Visible)
+                    _lastMesinRaw == null)
                 {
                     await LookupMesinAsync();
                 }
@@ -240,6 +240,13 @@ namespace ProjectCrimping
             {
                 _clockTimer.Dispose();
                 _dbClockWatch.Stop();
+
+                if (_logoImage != null)
+                {
+                    picLogo.Image = null;
+                    _logoImage.Dispose();
+                    _logoImage = null;
+                }
             };
 
             Shown += async (s, e) =>
@@ -302,6 +309,24 @@ namespace ProjectCrimping
         }
 
         // ================================================================
+        //  HELPER: reset cache
+        // ================================================================
+        private void ClearOperatorCache()
+        {
+            _lastOperatorNoreg = null;
+            _lastOperatorNama = null;
+            _lastOperatorExt = null;
+        }
+
+        private void ClearMesinCache()
+        {
+            _lastMesinRaw = null;
+            _lastMchName = null;
+            _lastMchArea = null;
+            _lastMchNo = null;
+        }
+
+        // ================================================================
         //  HELPER: strip prefix "ExcitedCRP" dari barcode operator
         // ================================================================
         private static string ExtractNoreg(string rawInput)
@@ -322,15 +347,18 @@ namespace ProjectCrimping
         // ================================================================
         //  HELPER: parse barcode mesin. Format: CRP<no>-<area>
         //
-        //  PERBAIKAN BUG: Inputan di-capital-kan semua terlebih dahulu
-        //  agar format yang di-return selalu konsisten (Contoh: CRP15-R2).
+        //  Input di-kapital-kan dulu supaya hasil selalu konsisten
+        //  (contoh: CRP15-R2).
+        //
+        //  CATATAN: format saat ini kaku (tepat 2 digit no, "R" + 1 digit
+        //  area). Kalau nanti ada mesin seperti CRP105-R10, longgarkan
+        //  aturan panjang di bawah.
         // ================================================================
         private static (string Area, string No)? ExtractMesin(string rawInput)
         {
             if (string.IsNullOrWhiteSpace(rawInput))
                 return null;
 
-            // Ubah ke kapital untuk mempermudah pengecekan
             string trimmed = rawInput.Trim().ToUpperInvariant();
 
             if (!trimmed.StartsWith(MesinPrefix, StringComparison.Ordinal))
@@ -349,37 +377,54 @@ namespace ProjectCrimping
             if (area.Length != 2 || area[0] != 'R' || !char.IsDigit(area[1]))
                 return null;
 
-            // KEMBALIKAN DALAM FORMAT KAPITAL (SERAGAM)
             return (area, no);
         }
 
         // ================================================================
         //  LOOKUP OPERATOR
         //
-        //  Ambil `nama` DAN `ext` dari DB_PEGAWAI.
+        //  - Kalau lookup untuk input yang SAMA sedang berjalan, task yang
+        //    sama dipakai ulang (tidak query dobel).
+        //  - Kalau input berubah selagi query berjalan, hasil lama dibuang.
+        //
+        //  Ambil `nama` DAN `ext` dari DB_PEGAWAI:
         //  - `nama` dipakai untuk hint chip
-        //  - `ext` dipakai untuk membentuk URL foto profil di Dashboard:
-        //      http://122.144.4.194:31985/indoprima_gemilang/public/img/{noreg}.{ext}
-        //
-        //  Hasil disimpan di field _lastOperator* supaya tidak query ulang
-        //  saat BtnLogin_Click().
-        //
-        //  Field kosong → tampilkan error "wajib diisi" (bukan diam saja).
+        //  - `ext` dipakai untuk URL foto profil di Dashboard
         // ================================================================
-        private async Task LookupOperatorAsync()
+        private Task LookupOperatorAsync()
         {
             string raw = txtNoRegOperator.Text.Trim();
 
+            if (_operatorLookupTask != null &&
+                !_operatorLookupTask.IsCompleted &&
+                _operatorLookupRaw == raw)
+            {
+                return _operatorLookupTask;
+            }
+
+            _operatorLookupRaw = raw;
+            _operatorLookupTask = LookupOperatorCoreAsync(raw);
+            return _operatorLookupTask;
+        }
+
+        private bool IsOperatorInputStale(string raw)
+        {
+            return !string.Equals(txtNoRegOperator.Text.Trim(), raw, StringComparison.Ordinal);
+        }
+
+        private void SetOperatorError(string message)
+        {
+            AppThemeLogin.ClearHintChip(lblHintOperator);
+            AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator, message);
+            ClearOperatorCache();
+        }
+
+        private async Task LookupOperatorCoreAsync(string raw)
+        {
             // ===== VALIDASI KOSONG =====
             if (string.IsNullOrEmpty(raw))
             {
-                AppThemeLogin.ClearHintChip(lblHintOperator);
-                AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
-                    "No Reg Operator wajib diisi");
-
-                _lastOperatorNoreg = null;
-                _lastOperatorNama = null;
-                _lastOperatorExt = null;
+                SetOperatorError("No Reg Operator wajib diisi");
                 return;
             }
 
@@ -387,13 +432,7 @@ namespace ProjectCrimping
 
             if (noreg == null)
             {
-                AppThemeLogin.ClearHintChip(lblHintOperator);
-                AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
-                    "Noreg Tidak Sesuai Format");
-
-                _lastOperatorNoreg = null;
-                _lastOperatorNama = null;
-                _lastOperatorExt = null;
+                SetOperatorError("Noreg Tidak Sesuai Format");
                 return;
             }
 
@@ -401,29 +440,31 @@ namespace ProjectCrimping
             {
                 string nama = null;
                 string ext = null;
-                bool found = false;        // ada row di DB_PEGAWAI (terlepas dari resign)
-                bool sudahResign = false;  // tgl_resign terisi
+                bool found = false;        // ada row di DB_PEGAWAI
+                bool sudahResign = false;  // sudah lewat tanggal resign
 
                 await Task.Run(() =>
                 {
                     using (var conn = _db.Open())
                     using (var cmd = new SqlCommand(
-                        @"SELECT TOP 1 nama, ext, tgl_resign 
-                  FROM DB_PEGAWAI 
-                  WHERE noreg = @noreg",
+                        @"SELECT TOP 1
+                                 nama,
+                                 ext,
+                                 CASE WHEN tgl_resign IS NOT NULL
+                                      THEN 1 ELSE 0 END AS sudah_resign
+                          FROM   DB_PEGAWAI
+                          WHERE  noreg = @noreg",
                         (SqlConnection)conn))
                     {
                         cmd.CommandTimeout = 10;
-                        cmd.Parameters.AddWithValue("@noreg", noreg);
+                        cmd.Parameters.Add("@noreg", SqlDbType.VarChar, 20).Value = noreg;
 
                         using (var reader = cmd.ExecuteReader())
                         {
                             if (reader.Read())
                             {
                                 found = true;
-
-                                object tglResign = reader["tgl_resign"];
-                                sudahResign = tglResign != null && tglResign != DBNull.Value;
+                                sudahResign = Convert.ToInt32(reader["sudah_resign"]) == 1;
 
                                 if (!sudahResign)
                                 {
@@ -435,29 +476,21 @@ namespace ProjectCrimping
                     }
                 });
 
+                // Input sudah berubah selama query → buang hasil lama
+                if (IsOperatorInputStale(raw))
+                    return;
+
                 // ===== TIDAK ADA DI DB_PEGAWAI =====
                 if (!found || (string.IsNullOrEmpty(nama) && !sudahResign))
                 {
-                    AppThemeLogin.ClearHintChip(lblHintOperator);
-                    AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
-                        "No Reg Operator tidak ditemukan");
-
-                    _lastOperatorNoreg = null;
-                    _lastOperatorNama = null;
-                    _lastOperatorExt = null;
+                    SetOperatorError("No Reg Operator tidak ditemukan");
                     return;
                 }
 
                 // ===== SUDAH RESIGN =====
                 if (sudahResign)
                 {
-                    AppThemeLogin.ClearHintChip(lblHintOperator);
-                    AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
-                        "Operator sudah resign / tidak aktif");
-
-                    _lastOperatorNoreg = null;
-                    _lastOperatorNama = null;
-                    _lastOperatorExt = null;
+                    SetOperatorError("Operator sudah resign / tidak aktif");
                     return;
                 }
 
@@ -471,34 +504,55 @@ namespace ProjectCrimping
             }
             catch (Exception ex)
             {
-                AppThemeLogin.ClearHintChip(lblHintOperator);
-                AppThemeLogin.SetFieldError(pnlFieldOperator, lblErrOperator,
-                    "Gagal akses DB: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[LOOKUP OPERATOR] " + ex);
 
-                _lastOperatorNoreg = null;
-                _lastOperatorNama = null;
-                _lastOperatorExt = null;
+                if (IsOperatorInputStale(raw))
+                    return;
+
+                SetOperatorError("Gagal terhubung ke database, coba lagi");
             }
         }
+
         // ================================================================
         //  LOOKUP MESIN
         //
-        //  PERBAIKAN BUG: Menyimpan `_lastMesinRaw` dalam format standar
-        //  (CRP<No>-<Area>) supaya konsisten meskipun operator mengetik
-        //  dengan huruf kecil.
-        //
-        //  Field kosong → tampilkan error "wajib diisi" (bukan diam saja).
+        //  Sama seperti operator: anti query dobel + buang hasil basi.
+        //  Cache disimpan dalam format standar (CRP<No>-<Area>, kapital).
         // ================================================================
-        private async Task LookupMesinAsync()
+        private Task LookupMesinAsync()
         {
             string raw = txtMesin.Text.Trim();
 
+            if (_mesinLookupTask != null &&
+                !_mesinLookupTask.IsCompleted &&
+                _mesinLookupRaw == raw)
+            {
+                return _mesinLookupTask;
+            }
+
+            _mesinLookupRaw = raw;
+            _mesinLookupTask = LookupMesinCoreAsync(raw);
+            return _mesinLookupTask;
+        }
+
+        private bool IsMesinInputStale(string raw)
+        {
+            return !string.Equals(txtMesin.Text.Trim(), raw, StringComparison.Ordinal);
+        }
+
+        private void SetMesinError(string message)
+        {
+            AppThemeLogin.ClearHintChip(lblHintMesin);
+            AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin, message);
+            ClearMesinCache();
+        }
+
+        private async Task LookupMesinCoreAsync(string raw)
+        {
             // ===== VALIDASI KOSONG =====
             if (string.IsNullOrEmpty(raw))
             {
-                AppThemeLogin.ClearHintChip(lblHintMesin);
-                AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin,
-                    "Mesin wajib diisi");
+                SetMesinError("Mesin wajib diisi");
                 return;
             }
 
@@ -506,9 +560,7 @@ namespace ProjectCrimping
 
             if (parsed == null)
             {
-                AppThemeLogin.ClearHintChip(lblHintMesin);
-                AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin,
-                    "Format barcode mesin tidak valid (contoh: CRP15-R2)");
+                SetMesinError("Format barcode mesin tidak valid (contoh: CRP15-R2)");
                 return;
             }
 
@@ -519,9 +571,7 @@ namespace ProjectCrimping
             {
                 string mchName = await Task.Run(() =>
                 {
-                    var dbMy = new DatabaseHelper(DbProvider.MySql);
-
-                    using (var conn = dbMy.Open())
+                    using (var conn = _dbMy.Open())
                     using (var cmd = new MySqlCommand(
                         @"SELECT MchName 
                           FROM   tabmch 
@@ -540,32 +590,32 @@ namespace ProjectCrimping
                     }
                 });
 
+                // Input sudah berubah selama query → buang hasil lama
+                if (IsMesinInputStale(raw))
+                    return;
+
                 if (string.IsNullOrEmpty(mchName))
                 {
-                    AppThemeLogin.ClearHintChip(lblHintMesin);
-                    AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin,
-                        "Mesin tidak ditemukan");
+                    SetMesinError("Mesin tidak ditemukan");
+                    return;
                 }
-                else
-                {
-                    // ========================================================
-                    // PERBAIKAN BUG: Simpan format standar (Kapital), 
-                    // bukan inputan asli operator.
-                    // ========================================================
-                    _lastMesinRaw = $"CRP{mchNo}-{mchArea}";
-                    _lastMchName = mchName;
-                    _lastMchArea = mchArea;
-                    _lastMchNo = mchNo;
 
-                    AppThemeLogin.ClearFieldError(pnlFieldMesin, lblErrMesin);
-                    AppThemeLogin.SetHintChip(lblHintMesin, $"{mchName} · {mchArea} No {mchNo}");
-                }
+                _lastMesinRaw = $"CRP{mchNo}-{mchArea}";
+                _lastMchName = mchName;
+                _lastMchArea = mchArea;
+                _lastMchNo = mchNo;
+
+                AppThemeLogin.ClearFieldError(pnlFieldMesin, lblErrMesin);
+                AppThemeLogin.SetHintChip(lblHintMesin, $"{mchName} · {mchArea} No {mchNo}");
             }
             catch (Exception ex)
             {
-                AppThemeLogin.ClearHintChip(lblHintMesin);
-                AppThemeLogin.SetFieldError(pnlFieldMesin, lblErrMesin,
-                    "Gagal akses DB: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[LOOKUP MESIN] " + ex);
+
+                if (IsMesinInputStale(raw))
+                    return;
+
+                SetMesinError("Gagal terhubung ke database, coba lagi");
             }
         }
 
@@ -643,16 +693,19 @@ namespace ProjectCrimping
 
         // ================================================================
         //  Load logo brand.
+        //  Pakai Bitmap(path) → dicopy ke memori, file tidak terkunci.
         // ================================================================
         private void LoadBrandLogo(PictureBox picLogo, Panel brandBadge)
         {
             try
             {
                 string path = System.IO.Path.Combine(Application.StartupPath, "images", "logoipg.png");
-                Image logo = System.IO.File.Exists(path) ? Image.FromFile(path) : null;
-                if (logo == null) throw new Exception("Logo tidak ditemukan");
+                if (!System.IO.File.Exists(path))
+                    throw new Exception("Logo tidak ditemukan");
 
-                picLogo.Image = logo;
+                _logoImage = new Bitmap(path);
+
+                picLogo.Image = _logoImage;
                 picLogo.SizeMode = PictureBoxSizeMode.Zoom;
                 picLogo.BackColor = Color.Transparent;
 
@@ -671,10 +724,15 @@ namespace ProjectCrimping
 
         // ================================================================
         //  PROSES LOGIN
+        //
+        //  _busy diset PALING AWAL supaya Enter dobel / Enter + klik
+        //  tidak bisa lolos dua kali (validasi punya await di dalamnya).
+        //  finally selalu mereset _busy, termasuk saat validasi gagal.
         // ================================================================
         private async Task BtnLogin_Click()
         {
             if (_busy) return;
+            _busy = true;
 
             try
             {
@@ -703,10 +761,10 @@ namespace ProjectCrimping
                         "Format barcode tidak valid");
                     firstInvalid = firstInvalid ?? txtNoRegOperator;
                 }
-                else if (!lblHintOperator.Visible)
+                else if (_lastOperatorNoreg == null)
                 {
                     await LookupOperatorAsync();
-                    if (!lblHintOperator.Visible)
+                    if (_lastOperatorNoreg == null)
                         firstInvalid = firstInvalid ?? txtNoRegOperator;
                 }
 
@@ -729,10 +787,10 @@ namespace ProjectCrimping
                         "Format barcode mesin tidak valid");
                     firstInvalid = firstInvalid ?? txtMesin;
                 }
-                else if (!lblHintMesin.Visible)
+                else if (_lastMesinRaw == null)
                 {
                     await LookupMesinAsync();
-                    if (!lblHintMesin.Visible)
+                    if (_lastMesinRaw == null)
                         firstInvalid = firstInvalid ?? txtMesin;
                 }
 
@@ -745,26 +803,28 @@ namespace ProjectCrimping
                 // ============================================================
                 //  MULAI PROSES LOGIN
                 // ============================================================
-                _busy = true;
                 btnLogin.Enabled = false;
                 btnLogin.Text = "Memproses...";
                 lblFooterStatus.Text = "Memproses login...";
                 lblFooterStatus.ForeColor = AppThemeLogin.ColorAccent;
 
-                // ---- Isi Session ----
-                Session.Noreg = noRegOperator;
-                Session.Nama = _lastOperatorNama ?? lblHintOperator.Text;
-                Session.ext = _lastOperatorExt;   // <- extension foto profil
+                // ---- Isi Session (semua dari cache hasil validasi) ----
+                Session.Noreg = _lastOperatorNoreg;
+                Session.Nama = _lastOperatorNama;
+                Session.ext = _lastOperatorExt;   // extension foto profil
                 Session.Shift = int.TryParse(shiftValue, out int sh) ? sh : 0;
-                Session.IsLoggedIn = true;
 
-                Session.mesin = _lastMesinRaw;    // ← selalu format kapital: CRP15-R2
+                Session.mesin = _lastMesinRaw;    // selalu format kapital: CRP15-R2
                 Session.MesinName = _lastMchName;
                 Session.MesinArea = _lastMchArea;
                 Session.MesinNo = _lastMchNo;
 
+                // Dashboard kemungkinan membaca Session di constructor-nya,
+                // jadi IsLoggedIn diset sebelum dibuat dan di-rollback di catch.
+                Session.IsLoggedIn = true;
+
                 System.Diagnostics.Debug.WriteLine(
-                    $"LOGIN => Operator={noRegOperator} ({Session.Nama}), " +
+                    $"LOGIN => Operator={Session.Noreg} ({Session.Nama}), " +
                     $"Ext={Session.ext ?? "(null)"}, " +
                     $"Shift={Session.Shift}, " +
                     $"MesinRaw={_lastMesinRaw}, " +
@@ -779,6 +839,8 @@ namespace ProjectCrimping
             }
             catch (Exception ex)
             {
+                // Dashboard gagal dibuka → batalkan status login
+                Session.IsLoggedIn = false;
                 NotifPopup.Error(this, "Error", ex.Message);
             }
             finally
@@ -810,14 +872,8 @@ namespace ProjectCrimping
             AppThemeLogin.ClearHintChip(lblHintOperator);
             AppThemeLogin.ClearHintChip(lblHintMesin);
 
-            _lastMesinRaw = null;
-            _lastMchName = null;
-            _lastMchArea = null;
-            _lastMchNo = null;
-
-            _lastOperatorNoreg = null;
-            _lastOperatorNama = null;
-            _lastOperatorExt = null;
+            ClearMesinCache();
+            ClearOperatorCache();
 
             _busy = false;
             btnLogin.Enabled = true;

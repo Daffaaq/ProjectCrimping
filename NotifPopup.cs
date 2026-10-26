@@ -1,11 +1,24 @@
 ﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Media;
 using System.Windows.Forms;
 
 namespace ProjectCrimping
 {
-    /// <summary>Popup notifikasi bertema sama dengan AppThemePopup. Panggil: NotifPopup.Success(this, "Judul", "Pesan");</summary>
+    /// <summary>
+    /// Popup notifikasi bertema sama dengan AppThemePopup.
+    /// Panggil: NotifPopup.Success(this, "Judul", "Pesan");
+    ///
+    /// PENTING: harus dipanggil dari UI thread (jangan dari Task.Run).
+    ///
+    /// Perilaku keyboard (aman untuk lingkungan barcode scanner):
+    ///   - Popup 1 tombol (Info/Success/Warning/Error): Enter menutup,
+    ///     tapi baru aktif setelah EnterGuardMs supaya Enter dari scanner
+    ///     tidak menutup popup sebelum sempat dibaca.
+    ///   - Popup 2 tombol (Confirm): Enter DIABAIKAN. User harus klik
+    ///     tombolnya. Esc = batal.
+    /// </summary>
     internal static class NotifPopup
     {
         public enum Kind { Info, Success, Warning, Error }
@@ -16,6 +29,15 @@ namespace ProjectCrimping
         private const int FormWidth = 440;
         private const int ActionHeight = 84;
         private const int PadX = 24;
+
+        // Batas tinggi area pesan; lebih dari ini pesan jadi bisa di-scroll
+        private const int MaxMsgHeight = 280;
+
+        // Enter diabaikan sesaat setelah popup muncul
+        private const int EnterGuardMs = 400;
+
+        // Font ikon dibuat sekali (sebelumnya dibuat ulang di setiap Paint)
+        private static readonly Font IconFont = new Font("Segoe UI", 16f, FontStyle.Bold);
 
         // ===== Shortcut =====
         public static void Info(IWin32Window owner, string title, string message)
@@ -42,9 +64,16 @@ namespace ProjectCrimping
                                         string okText = "OK", string cancelText = null)
         {
             Color tone = ToneOf(kind);
+            bool two = cancelText != null;
             int textWidth = FormWidth - PadX * 2;
-            int msgHeight = TextRenderer.MeasureText(message ?? "", AppThemePopup.FontSub,
+
+            // Tinggi pesan: dibatasi MaxMsgHeight, sisanya di-scroll
+            int fullHeight = TextRenderer.MeasureText(message ?? "", AppThemePopup.FontSub,
                                 new Size(textWidth, int.MaxValue), TextFormatFlags.WordBreak).Height + 6;
+            bool needScroll = fullHeight > MaxMsgHeight;
+            int msgHeight = needScroll ? MaxMsgHeight : fullHeight;
+
+            PlaySound(kind);
 
             using (var f = new Form())
             {
@@ -59,15 +88,38 @@ namespace ProjectCrimping
                 f.KeyPreview = true;
                 f.ClientSize = new Size(FormWidth, 96 + msgHeight + 16 + ActionHeight);
 
+                DateTime shownAt = DateTime.MaxValue;
+
+                // Pastikan popup di depan dan menerima keyboard,
+                // lalu mulai hitung jeda Enter.
+                f.Shown += (s, e) =>
+                {
+                    shownAt = DateTime.UtcNow;
+                    f.Activate();
+                };
+
                 f.KeyDown += (s, e) =>
                 {
                     if (e.KeyCode == Keys.Escape)
-                        f.DialogResult = cancelText == null ? DialogResult.OK : DialogResult.Cancel;
+                    {
+                        e.SuppressKeyPress = true;
+                        f.DialogResult = two ? DialogResult.Cancel : DialogResult.OK;
+                    }
                     else if (e.KeyCode == Keys.Enter)
-                        f.DialogResult = DialogResult.OK;
+                    {
+                        e.SuppressKeyPress = true;
+
+                        // Konfirmasi: Enter diabaikan (harus klik tombol).
+                        // Popup biasa: Enter hanya berlaku setelah jeda singkat.
+                        if (!two &&
+                            (DateTime.UtcNow - shownAt).TotalMilliseconds > EnterGuardMs)
+                        {
+                            f.DialogResult = DialogResult.OK;
+                        }
+                    }
                 };
 
-                // --- Header (ikon + judul) ---
+                // --- Header (ikon + judul + pesan) ---
                 var header = new Panel { Dock = DockStyle.Top, Height = 96 + msgHeight, BackColor = Color.White };
 
                 var icon = new Panel { Size = new Size(52, 52), Location = new Point(PadX, 22), BackColor = Color.White };
@@ -87,23 +139,48 @@ namespace ProjectCrimping
 
                 var bar = new Panel { Size = new Size(48, 4), Location = new Point(PadX + 3, 84), BackColor = tone };
 
-                var lblMsg = new Label
+                Control msgControl;
+                if (needScroll)
                 {
-                    Text = message,
-                    Location = new Point(PadX + 2, 96),
-                    Size = new Size(textWidth, msgHeight),
-                    ForeColor = AppThemePopup.TextSub,
-                    Font = AppThemePopup.FontSub,
-                    BackColor = Color.White
-                };
+                    // Pesan panjang: read-only + scrollbar (bisa dicopy juga)
+                    msgControl = new TextBox
+                    {
+                        Text = message,
+                        Multiline = true,
+                        ReadOnly = true,
+                        ScrollBars = ScrollBars.Vertical,
+                        BorderStyle = BorderStyle.None,
+                        BackColor = Color.White,
+                        ForeColor = AppThemePopup.TextSub,
+                        Font = AppThemePopup.FontSub,
+                        Location = new Point(PadX + 2, 96),
+                        Size = new Size(textWidth, msgHeight),
+                        TabStop = false
+                    };
+                }
+                else
+                {
+                    msgControl = new Label
+                    {
+                        Text = message,
+                        Location = new Point(PadX + 2, 96),
+                        Size = new Size(textWidth, msgHeight),
+                        ForeColor = AppThemePopup.TextSub,
+                        Font = AppThemePopup.FontSub,
+                        BackColor = Color.White,
+                        UseCompatibleTextRendering = false
+                    };
+                }
 
                 header.Controls.Add(icon);
                 header.Controls.Add(lblTitle);
                 header.Controls.Add(bar);
-                header.Controls.Add(lblMsg);
+                header.Controls.Add(msgControl);
 
                 // --- Tombol ---
-                bool two = cancelText != null;
+                // TabStop dimatikan supaya tidak ada tombol yang otomatis
+                // fokus. Kalau ada, Enter dari scanner akan meng-klik tombol
+                // itu langsung dan melewati penjagaan Enter di atas.
                 var actions = new TableLayoutPanel
                 {
                     Dock = DockStyle.Bottom,
@@ -123,7 +200,8 @@ namespace ProjectCrimping
                     Radius = 12,
                     FillColor = tone,
                     BorderColor = tone,
-                    TextColor = Color.White
+                    TextColor = Color.White,
+                    TabStop = false
                 };
                 btnOk.Click += (s, e) => { f.DialogResult = DialogResult.OK; };
 
@@ -141,7 +219,8 @@ namespace ProjectCrimping
                         Radius = 12,
                         FillColor = AppThemePopup.AccentSoft,
                         BorderColor = AppThemePopup.AccentLine,
-                        TextColor = AppThemePopup.Accent
+                        TextColor = AppThemePopup.Accent,
+                        TabStop = false
                     };
                     btnNo.Click += (s, e) => { f.DialogResult = DialogResult.Cancel; };
                     btnOk.Margin = new Padding(8, 0, 0, 0);
@@ -162,6 +241,26 @@ namespace ProjectCrimping
         }
 
         // ===== Internal =====
+        private static void PlaySound(Kind kind)
+        {
+            try
+            {
+                switch (kind)
+                {
+                    case Kind.Error:
+                        SystemSounds.Hand.Play();
+                        break;
+                    case Kind.Warning:
+                        SystemSounds.Exclamation.Play();
+                        break;
+                }
+            }
+            catch
+            {
+                // suara tidak boleh menggagalkan popup
+            }
+        }
+
         private static Color ToneOf(Kind k)
         {
             switch (k)
@@ -193,9 +292,8 @@ namespace ProjectCrimping
                 case Kind.Error: glyph = "\u2715"; break;
                 default: glyph = "i"; break;
             }
-            using (var font = new Font("Segoe UI", 16f, FontStyle.Bold))
             using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString(glyph, font, Brushes.White, inner, sf);
+                g.DrawString(glyph, IconFont, Brushes.White, inner, sf);
         }
     }
 }

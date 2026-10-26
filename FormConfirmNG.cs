@@ -8,8 +8,17 @@ namespace ProjectCrimping
         private NumericUpDown nudNG;
         private RoundedButton btnYes, btnNo;
 
+        // true setelah user menekan YA atau TIDAK (jawaban eksplisit)
+        private bool _answered;
+
+        // Nilai NG di-snapshot saat OK, supaya tetap aman dibaca
+        // pemanggil walaupun form sudah di-dispose.
+        private int _ngValue;
+
         public bool HasNG { get; private set; }
-        public int NGValue { get { return (int)nudNG.Value; } }
+
+        /// <summary>Jumlah NG. Selalu 0 kalau HasNG = false.</summary>
+        public int NGValue { get { return _ngValue; } }
 
         public FormConfirmNG()
         {
@@ -39,41 +48,87 @@ namespace ProjectCrimping
             // Baris 2: input NG (default disabled, aktif kalau pilih YA)
             nudNG = AppThemePopup.AddInteger(body, "JUMLAH NG");
 
+            // Tanpa batas atas (default NumericUpDown hanya 100).
+            // int.MaxValue karena NGValue bertipe int.
+            nudNG.DecimalPlaces = 0;
+            nudNG.Minimum = 0;
+            nudNG.Maximum = int.MaxValue;
+
             nudNG.Enabled = false;
             HasNG = false;
+            _answered = false;
+
+            // Tombol minus tidak boleh diketik (jumlah NG tidak pernah negatif)
+            nudNG.KeyPress += (s, e) =>
+            {
+                if (e.KeyChar == '-')
+                    e.Handled = true;
+            };
 
             btnYes.Click += (s, e) =>
             {
+                _answered = true;
                 HasNG = true;
                 AppThemePopup.SetToggleActive(btnYes, btnNo);
+
+                // Ada NG → minimal 1. Value otomatis naik ke 1 kalau masih 0,
+                // dan angka 0 / minus yang diketik akan dikoreksi ke 1.
+                nudNG.Minimum = 1;
+                if (nudNG.Value < 1)
+                    nudNG.Value = 1;
+
                 nudNG.Enabled = true;
                 nudNG.Focus();
+                nudNG.Select(0, nudNG.Text.Length);   // blok angka, tinggal ketik
             };
 
             btnNo.Click += (s, e) =>
             {
+                _answered = true;
                 HasNG = false;
                 AppThemePopup.SetToggleActive(btnNo, btnYes);
-                nudNG.Enabled = false;
+
+                // Tidak ada NG → nilai 0 harus valid lagi
+                nudNG.Minimum = 0;
                 nudNG.Value = 0;
+                nudNG.Enabled = false;
             };
 
             // Tombol Save dari BuildShell → OK
             btnSave.Click += (s, e) =>
             {
-                // Kalau user bilang ada NG tapi jumlah 0 → warning
-                if (HasNG && nudNG.Value <= 0)
+                // User belum menjawab YA / TIDAK → jangan dianggap "tidak ada NG"
+                if (!_answered)
                 {
                     NotifPopup.Warning(
                         this,
-                        "Jumlah NG Kosong",
-                        "Kamu pilih ADA NG, tapi jumlah NG masih 0. " +
+                        "Belum Dipilih",
+                        "Pilih dulu: YA, ADA NG atau TIDAK ADA NG."
+                    );
+
+                    return;
+                }
+
+                // Paksa NumericUpDown membaca angka yang baru diketik.
+                // Tanpa ini, Value bisa masih nilai lama kalau user belum
+                // meninggalkan field.
+                ValidateChildren();
+
+                // Jaring pengaman: kalau ada NG, jumlah wajib minimal 1
+                if (HasNG && nudNG.Value < 1)
+                {
+                    NotifPopup.Warning(
+                        this,
+                        "Jumlah NG Tidak Valid",
+                        "Kamu pilih ADA NG, jumlah NG minimal 1. " +
                         "Isi jumlah NG dulu ya."
                     );
 
                     nudNG.Focus();
                     return;
                 }
+
+                _ngValue = HasNG ? (int)nudNG.Value : 0;
 
                 DialogResult = DialogResult.OK;
             };

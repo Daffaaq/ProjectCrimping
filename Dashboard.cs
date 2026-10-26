@@ -1262,7 +1262,7 @@ namespace ProjectCrimping
                 if (fng.ShowDialog(this) != DialogResult.OK)
                 {
                     _state.ClearN3();
-                    return;
+                    return; 
                 }
 
                 _state.N3_NG = fng.HasNG ? (int?)fng.NGValue : null;
